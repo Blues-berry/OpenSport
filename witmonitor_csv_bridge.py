@@ -21,10 +21,11 @@ RAW_TO_LIVE = {
     "角度X(°)": "roll_deg", "角度Y(°)": "pitch_deg", "角度Z(°)": "yaw_deg",
 }
 OUTPUT_FIELDS = [
-    "timestamp_monotonic_s", "device", "ax_g", "ay_g", "az_g",
+    "timestamp_monotonic_s", "timestamp_unix_s", "device", "ax_g", "ay_g", "az_g",
     "gx_dps", "gy_dps", "gz_dps", "roll_deg", "pitch_deg", "yaw_deg",
     "inference_label", "exercise_probability",
 ]
+DEFAULT_WITMOTION_RECORD_DIR = Path(r"D:\download\Witmotion(V2026.6.26.0)\Record")
 
 
 def numeric(value: str | None) -> float:
@@ -47,32 +48,70 @@ class CsvTail:
             return []
         if size < self.position:
             self.position, self.header = 0, None
-        with self.path.open("r", encoding="utf-8-sig", newline="") as handle:
+        # Use binary offsets.  The source CSV has Chinese headers, so text-mode
+        # ``tell`` cookies plus byte-length arithmetic can skip or duplicate a
+        # row when WitMotion appends while we are reading.
+        with self.path.open("rb") as handle:
             if self.header is None:
-                self.header = [item.strip() for item in next(csv.reader([handle.readline()]))]
+                raw_header = handle.readline()
+                if not raw_header:
+                    return []
+                self.header = [item.strip() for item in next(csv.reader([
+                    raw_header.decode("utf-8-sig", errors="replace")
+                ]))]
                 self.position = handle.tell()
             handle.seek(self.position)
-            text = handle.read()
+            raw = handle.read()
             # Leave an incomplete final line for the next poll.
-            complete = text.rsplit("\n", 1)[0] if "\n" in text else ""
-            if not complete:
+            last_newline = raw.rfind(b"\n")
+            if last_newline < 0:
                 return []
-            consumed = len(complete.encode("utf-8")) + 1
-            self.position += consumed
-        return list(csv.DictReader(complete.splitlines(), fieldnames=self.header))
+            complete = raw[:last_newline + 1]
+            self.position += len(complete)
+        text = complete.decode("utf-8", errors="replace")
+        return list(csv.DictReader(text.splitlines(), fieldnames=self.header))
+
+
+def file_identity(path: Path) -> tuple[int, int]:
+    """Return an identity that survives a parent-directory rename on Windows."""
+    info = path.stat()
+    return info.st_dev, info.st_ino
+
+
+def recently_created_csvs(source_dir: Path, started: float, include_existing: bool) -> list[Path]:
+    """List readable source files without failing when WitMotion rotates one."""
+    files: list[Path] = []
+    for path in source_dir.rglob("*.csv"):
+        try:
+            if include_existing or path.stat().st_mtime >= started:
+                files.append(path)
+        except OSError:
+            # The app can atomically finish or rename a record between rglob
+            # and stat; retry it during the following scan.
+            continue
+    return files
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--source-dir", type=Path, default=Path("IMU数据采集"))
+    parser.add_argument("--source-dir", type=Path, default=DEFAULT_WITMOTION_RECORD_DIR)
     parser.add_argument("--model", type=Path, required=True)
     parser.add_argument("--csv", type=Path, default=Path("imu_output/live_imu.csv"))
     parser.add_argument("--sample-rate", type=float, default=100.0)
     parser.add_argument("--poll-seconds", type=float, default=0.05)
+    parser.add_argument("--include-existing", action="store_true",
+                        help="包含启动前已封存的 CSV；用于只读验证，不影响 WitMotion。")
+    parser.add_argument("--once", action="store_true",
+                        help="处理当前匹配的文件后退出；必须与 --include-existing 一起使用。")
     args = parser.parse_args()
 
+    if args.once and not args.include_existing:
+        parser.error("--once 需要 --include-existing，避免误把历史记录当成实时流。")
     started = time.time()
-    tails: dict[Path, CsvTail] = {}
+    # Key by the Windows file identity rather than the path.  A user can rename
+    # a recording directory immediately after collection without causing the
+    # same data_0.csv to be interpreted as a second, new stream.
+    tails: dict[tuple[int, int], CsvTail] = {}
     classifiers: dict[str, LiveExerciseClassifier] = {}
     sample_time: dict[str, float] = {}
     tracked_files: list[Path] = []
@@ -87,18 +126,37 @@ def main() -> None:
         while True:
             now_wall = time.time()
             if now_wall >= next_scan:
-                tracked_files = [p for p in args.source_dir.rglob("*.csv") if p != args.csv and p.stat().st_mtime >= started]
+                tracked_files = [p for p in recently_created_csvs(
+                    args.source_dir, started, args.include_existing
+                ) if p != args.csv]
                 next_scan = now_wall + 1.0
             for path in tracked_files:
-                tail = tails.setdefault(path, CsvTail(path))
+                try:
+                    identity = file_identity(path)
+                except OSError:
+                    continue
+                tail = tails.get(identity)
+                if tail is None:
+                    tail = tails[identity] = CsvTail(path)
+                else:
+                    # Continue from the previous byte offset after the parent
+                    # folder is renamed by the operator.
+                    tail.path = path
                 for raw in tail.read_new():
                     if not set(RAW_TO_LIVE).issubset(raw):
                         continue
                     device = str(raw.get("设备名称") or path.stem).strip()
-                    classifier = classifiers.setdefault(device, LiveExerciseClassifier(str(args.model)))
+                    classifier = classifiers.setdefault(device, LiveExerciseClassifier(args.model))
                     now = sample_time.get(device, 0.0) + 1.0 / args.sample_rate
                     sample_time[device] = now
-                    sample = {"timestamp_monotonic_s": now, "device": device}
+                    # The vendor CSV records a time-of-day without a date.  Use
+                    # the arrival time for dashboard freshness while preserving
+                    # the monotonic sample time used by the model.
+                    sample = {
+                        "timestamp_monotonic_s": now,
+                        "timestamp_unix_s": time.time(),
+                        "device": device,
+                    }
                     sample.update({target: numeric(raw.get(source)) for source, target in RAW_TO_LIVE.items()})
                     prediction = classifier.update(sample)
                     if prediction:
@@ -108,6 +166,9 @@ def main() -> None:
                     sample["exercise_probability"] = classifier.last_probability if classifier.last_probability is not None else ""
                     writer.writerow(sample)
                     output.flush()
+            if args.once and tracked_files:
+                print("已完成封存 CSV 的只读验证。")
+                return
             time.sleep(args.poll_seconds)
 
 

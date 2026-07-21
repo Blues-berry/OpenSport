@@ -10,7 +10,7 @@ import time
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from bleak import BleakScanner
 
@@ -18,6 +18,12 @@ from bleak import BleakScanner
 ROOT = Path(__file__).resolve().parent
 LIVE_CSV_PATH = ROOT / "imu_output" / "live_imu.csv"
 STATUS_PATH = ROOT / "imu_output" / "live_status.json"
+BLE_CSV_PATH = ROOT / "imu_output" / "live_ble_imu.csv"
+BLE_STATUS_PATH = ROOT / "imu_output" / "live_ble_status.json"
+SOURCES = {
+    "witmonitor": (LIVE_CSV_PATH, STATUS_PATH),
+    "ble": (BLE_CSV_PATH, BLE_STATUS_PATH),
+}
 TARGET_DEVICES = {
     "WT22222": "F6:B1:93:B5:2B:23",
     "WT901BLE11": "F7:36:CA:B7:CB:34",
@@ -96,11 +102,17 @@ def live_payload(
     for name, address in TARGET_DEVICES.items():
         rows = rows_by_device[name]
         status = raw_status.get(name, {}) if isinstance(raw_status, dict) else {}
-        last_unix = _number(status.get("last_sample_unix_s"))
+        status_last_unix = _number(status.get("last_sample_unix_s"))
+        last_unix = status_last_unix
         if rows:
             last_unix = max(last_unix, _number(rows[-1].get("timestamp_unix_s")))
         age = now - last_unix if last_unix > 0 else None
         receiver_state = str(status.get("state") or "waiting")
+        # A passive WitMotion CSV bridge shares the same normalized output but
+        # has no BLE receiver status.  Prefer its fresh sample over a stale
+        # status file left by an earlier direct-BLE attempt.
+        if rows and last_unix > status_last_unix:
+            receiver_state = "file_stream"
         display_state = "stale" if age is None or age > STALE_SECONDS else receiver_state
         streams[name] = {
             "name": name,
@@ -111,6 +123,14 @@ def live_payload(
             "stats": status,
         }
     return {"generated_unix_s": now, "streams": streams}
+
+
+def source_payload(source: str) -> dict[str, Any]:
+    """Read one isolated live source without mixing its samples with another."""
+    csv_path, status_path = SOURCES.get(source, SOURCES["witmonitor"])
+    payload = live_payload(csv_path, status_path)
+    payload["source"] = source if source in SOURCES else "witmonitor"
+    return payload
 
 
 class DashboardHandler(SimpleHTTPRequestHandler):
@@ -126,7 +146,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
     def do_GET(self) -> None:
         route = urlparse(self.path).path
         if route == "/api/live":
-            self.send_json(live_payload())
+            source = parse_qs(urlparse(self.path).query).get("source", ["witmonitor"])[0]
+            self.send_json(source_payload(source))
             return
         if route == "/api/devices":
             self.send_json({"devices": [

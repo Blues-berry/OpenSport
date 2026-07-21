@@ -6,6 +6,9 @@ the dashboard selection never changes the capture set.
 
 Example:
   python realtime_ble_imu.py --model imu_output/run_20260721/model/l2_logistic_model.pkl
+
+This is intentionally separate from the WitMotion recording-file bridge.  It
+receives GATT notifications directly and writes ``live_ble_imu.csv``.
 """
 from __future__ import annotations
 
@@ -493,8 +496,8 @@ async def scan_devices(timeout: float) -> None:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", help="必填：训练输出的 l2_logistic_model.pkl")
-    parser.add_argument("--csv", default="imu_output/live_imu.csv", help="规范化实时流 CSV 路径")
-    parser.add_argument("--status", default="imu_output/live_status.json", help="设备状态 JSON 路径")
+    parser.add_argument("--csv", default="imu_output/live_ble_imu.csv", help="BLE 规范化实时流 CSV 路径")
+    parser.add_argument("--status", default="imu_output/live_ble_status.json", help="BLE 设备状态 JSON 路径")
     parser.add_argument("--target-rate-hz", type=float, default=TARGET_RATE_HZ, help="实时规范化采样率")
     parser.add_argument("--smooth-seconds", type=float, default=SMOOTH_SECONDS, help="因果平滑时间窗")
     parser.add_argument("--scan", action="store_true", help="仅扫描附近 BLE 设备")
