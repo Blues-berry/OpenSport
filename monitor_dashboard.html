@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>双设备 IMU 实时推理</title>
+  <style>
+    :root { --bg:#07111f; --panel:#101d2f; --line:#263b58; --text:#f2f7ff; --muted:#91a4bd; --cyan:#50d9ff; --green:#41e3a7; --amber:#ffcb66; --red:#ff6f85; }
+    * { box-sizing:border-box; } body { margin:0; min-width:320px; color:var(--text); font:14px/1.45 Inter,"Microsoft YaHei",sans-serif; background:radial-gradient(circle at 84% 0%,#12375b 0,transparent 28%),var(--bg); }
+    header { min-height:72px; display:flex; align-items:center; justify-content:space-between; gap:14px; padding:14px 32px; border-bottom:1px solid var(--line); background:#0a1626d9; }.brand{display:flex;align-items:center;gap:12px;font-weight:700;font-size:18px;letter-spacing:.4px}.brand-mark{width:30px;height:30px;display:grid;place-items:center;border:2px solid var(--cyan);border-radius:9px;color:var(--cyan)}button{background:#163959;color:#c7f4ff;border:1px solid #2e7398;border-radius:7px;padding:8px 11px;cursor:pointer}button:hover{background:#1c527d}button:disabled{opacity:.6;cursor:wait}.summary{color:var(--muted);font-size:12px}
+    main{max-width:1680px;margin:auto;padding:24px 32px 40px}.eyebrow{margin:0 0 5px;color:var(--cyan);font-size:11px;letter-spacing:1.8px;font-weight:700}.heading{margin:0 0 22px;font-size:25px}.device-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}.device-card{min-width:0;background:linear-gradient(145deg,#122238,#0d1929);border:1px solid var(--line);border-radius:16px;padding:18px;box-shadow:0 12px 28px #00000022}.stream-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:16px}.device-name{margin:0;font-size:18px}.address{color:var(--muted);font-size:11px}.chip{display:inline-flex;align-items:center;gap:6px;padding:5px 9px;border:1px solid var(--line);border-radius:99px;color:var(--muted);font-size:11px}.dot{width:8px;height:8px;border-radius:50%;background:var(--amber);box-shadow:0 0 10px var(--amber)}.chip.live .dot{background:var(--green);box-shadow:0 0 10px var(--green)}.chip.stale .dot,.chip.reconnecting .dot{background:var(--red);box-shadow:0 0 10px var(--red)}
+    .overview{display:grid;grid-template-columns:.9fr 1.1fr;gap:16px}.state-box,.sensor-box,.orientation-box,.chart{padding:14px;border:1px solid var(--line);border-radius:12px;background:#0a1524}.small-label{color:var(--muted);font-size:11px;letter-spacing:.8px;text-transform:uppercase}.state{margin:12px 0 3px;font-size:30px;font-weight:800}.state.active{color:var(--green)}.state.idle{color:var(--cyan)}.prob{color:var(--muted);font-size:13px}.bar{height:8px;overflow:hidden;margin:15px 0 10px;border-radius:8px;background:#253750}.bar>i{display:block;width:0;height:100%;border-radius:inherit;background:linear-gradient(90deg,var(--cyan),var(--green));transition:width .3s}.updated{color:var(--muted);font-size:11px}
+    .signal-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.vector{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-top:8px}.axis{padding:7px 3px;border-radius:7px;background:#122238;text-align:center}.axis span{display:block;color:var(--muted);font-size:10px}.axis strong{font-size:14px}.angles{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-top:8px}.angle{padding:7px 5px;border-radius:7px;border-left:3px solid var(--cyan);background:#122238}.angle:nth-child(2){border-color:var(--green)}.angle:nth-child(3){border-color:var(--amber)}.angle span{display:block;color:var(--muted);font-size:10px}.angle strong{font-size:14px}.charts{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:14px}.chart-title{display:flex;justify-content:space-between;margin-bottom:9px;color:#c9d8ea;font-size:12px;font-weight:700}.chart-title small{color:var(--muted);font-weight:400}.legend{display:flex;gap:10px;margin-bottom:8px;color:var(--muted);font-size:10px}.legend i{display:inline-block;width:7px;height:7px;margin-right:4px;border-radius:50%;background:var(--cyan)}.legend i.y{background:var(--green)}.legend i.z{background:var(--amber)}canvas{width:100%;height:160px;border-radius:8px;background:#07111f}.stats{margin-top:12px;color:var(--muted);font-size:11px}
+    @media(max-width:1050px){.device-grid{grid-template-columns:1fr}}@media(max-width:640px){header,main{padding-left:16px;padding-right:16px}header{align-items:flex-start;flex-wrap:wrap}.heading{font-size:21px}.overview,.charts{grid-template-columns:1fr}.state{font-size:26px}}
+  </style>
+</head>
+<body>
+  <header>
+    <div class="brand"><div class="brand-mark">◢</div>双设备 IMU 实时推理</div>
+    <button id="scanBtn">检查 BLE 可见性</button>
+    <div id="summary" class="summary">等待两台设备的实时流</div>
+  </header>
+  <main>
+    <p class="eyebrow">DIRECT BLE · LOCAL INFERENCE</p>
+    <h1 class="heading">耳戴式 IMU 运动状态监测</h1>
+    <section id="deviceGrid" class="device-grid"></section>
+  </main>
+  <script>
+    const DEVICE_ORDER=['WT22222','WT901BLE11'];
+    const COLORS=['#50d9ff','#41e3a7','#ffcb66'];
+    const $=id=>document.getElementById(id);
+    const safe=name=>name.replace(/[^a-zA-Z0-9_-]/g,'_');
+    const num=value=>Number.isFinite(Number(value))?Number(value):0;
+    const fixed=(value,digits=1)=>num(value).toFixed(digits);
+    const isValue=value=>value!==''&&value!==null&&value!==undefined&&Number.isFinite(Number(value));
+
+    function card(name,address=''){
+      const id=safe(name);
+      return `<article class="device-card" id="card-${id}">
+        <div class="stream-head"><div><h2 class="device-name">${name}</h2><div id="address-${id}" class="address">${address||'等待设备配置'}</div></div><span id="chip-${id}" class="chip stale"><i class="dot"></i><span id="chipText-${id}">等待数据</span></span></div>
+        <div class="overview"><section class="state-box"><div class="small-label">推理状态</div><div id="state-${id}" class="state idle">等待数据</div><div class="prob">运动概率 <strong id="prob-${id}">—</strong></div><div class="bar"><i id="bar-${id}"></i></div><div id="updated-${id}" class="updated">尚未收到规范化采样</div></section>
+          <section class="signal-grid"><div class="sensor-box"><div class="small-label">Acceleration · g</div><div id="acc-${id}" class="vector"></div><div class="small-label" style="margin-top:12px">Angular velocity · °/s</div><div id="gyro-${id}" class="vector"></div></div><div class="orientation-box"><div class="small-label">姿态角 · °</div><div id="angles-${id}" class="angles"></div></div></section></div>
+        <section class="charts"><div class="chart"><div class="chart-title">加速度趋势 <small>最近 180 点</small></div><div class="legend"><span><i></i>X</span><span><i class="y"></i>Y</span><span><i class="z"></i>Z</span></div><canvas id="accChart-${id}"></canvas></div><div class="chart"><div class="chart-title">姿态角趋势 <small>最近 180 点</small></div><div class="legend"><span><i></i>Roll</span><span><i class="y"></i>Pitch</span><span><i class="z"></i>Yaw</span></div><canvas id="angleChart-${id}"></canvas></div></section>
+        <div id="stats-${id}" class="stats"></div></article>`;
+    }
+
+    function ensureCard(name,address){if(!$(`card-${safe(name)}`))$('deviceGrid').insertAdjacentHTML('beforeend',card(name,address));}
+    function vectors(id,values,unit){$(id).innerHTML=values.map(([axis,value])=>`<div class="axis"><span>${axis}</span><strong>${fixed(value)}</strong><span>${unit}</span></div>`).join('');}
+    function angles(id,row){$(id).innerHTML=[['Roll',row.roll_deg],['Pitch',row.pitch_deg],['Yaw',row.yaw_deg]].map(([axis,value])=>`<div class="angle"><span>${axis}</span><strong>${fixed(value)}°</strong></div>`).join('');}
+    function chart(canvas,rows,keys){const d=window.devicePixelRatio||1,w=canvas.clientWidth*d,h=canvas.clientHeight*d;canvas.width=w;canvas.height=h;const c=canvas.getContext('2d');c.scale(d,d);const W=canvas.clientWidth,H=canvas.clientHeight;c.clearRect(0,0,W,H);c.strokeStyle='#1d3047';c.lineWidth=1;for(let i=1;i<4;i++){const y=H*i/4;c.beginPath();c.moveTo(0,y);c.lineTo(W,y);c.stroke();}if(!rows.length)return;const values=rows.flatMap(row=>keys.map(key=>num(row[key])));let min=Math.min(...values),max=Math.max(...values);if(!isFinite(min)||min===max){min-=1;max+=1;}const pad=(max-min)*.08;min-=pad;max+=pad;keys.forEach((key,index)=>{c.strokeStyle=COLORS[index];c.lineWidth=1.7;c.beginPath();rows.forEach((row,i)=>{const x=i*W/Math.max(rows.length-1,1),y=H-(num(row[key])-min)/(max-min)*H;i?c.lineTo(x,y):c.moveTo(x,y);});c.stroke();});}
+    function labelForState(state){return {live:'实时连接',connecting:'正在连接',discovering:'正在发现',reconnecting:'正在重连',stale:'数据已过期',waiting:'等待接收器'}[state]||state||'等待数据';}
+    function render(name,stream){ensureCard(name,stream.address);const id=safe(name),rows=stream.rows||[],last=rows[rows.length-1];const chip=$(`chip-${id}`);chip.className=`chip ${stream.state||'stale'}`;$(`chipText-${id}`).textContent=labelForState(stream.state);$(`address-${id}`).textContent=stream.address||'';if(last){const probability=isValue(last.exercise_probability)?num(last.exercise_probability):null;const label=last.inference_label||'正在积累窗口';$(`state-${id}`).textContent=label;$(`state-${id}`).className=`state ${label==='运动'?'active':'idle'}`;$(`prob-${id}`).textContent=probability===null?'—':fixed(probability*100)+'%';$(`bar-${id}`).style.width=probability===null?'0%':Math.max(0,Math.min(100,probability*100))+'%';vectors(`acc-${id}`,[['X',last.ax_g],['Y',last.ay_g],['Z',last.az_g]],'g');vectors(`gyro-${id}`,[['X',last.gx_dps],['Y',last.gy_dps],['Z',last.gz_dps]],'°/s');angles(`angles-${id}`,last);const age=stream.last_sample_age_s; $(`updated-${id}`).textContent=age===null||age===undefined?'等待新采样':`最后采样 ${fixed(age,1)} 秒前`;chart($(`accChart-${id}`),rows,['ax_g','ay_g','az_g']);chart($(`angleChart-${id}`),rows,['roll_deg','pitch_deg','yaw_deg']);}else{$(`state-${id}`).textContent=labelForState(stream.state);$(`state-${id}`).className='state idle';$(`prob-${id}`).textContent='—';$(`bar-${id}`).style.width='0%';$(`updated-${id}`).textContent='请关闭 WitMotion 后启动实时接收器';vectors(`acc-${id}`,[['X',0],['Y',0],['Z',0]],'g');vectors(`gyro-${id}`,[['X',0],['Y',0],['Z',0]],'°/s');angles(`angles-${id}`,{});chart($(`accChart-${id}`),[],[]);chart($(`angleChart-${id}`),[],[]);}const stats=stream.stats||{};$(`stats-${id}`).textContent=`连接 ${stats.connections||0} 次 · 原始帧 ${stats.raw_frames||0} · 规范化点 ${stats.normalized_samples||0} · 源速率 ${fixed(stats.source_rate_hz||0,0)} Hz${stats.last_error?` · ${stats.last_error}`:''}`;}
+    function renderAll(payload){const streams=payload.streams||{};const names=[...DEVICE_ORDER,...Object.keys(streams).filter(name=>!DEVICE_ORDER.includes(name))];names.forEach(name=>render(name,streams[name]||{name,state:'waiting',rows:[]}));const online=Object.values(streams).filter(stream=>stream.state==='live').length;$('summary').textContent=`${online}/2 台设备正在实时推理`}
+    async function check(){const button=$('scanBtn');button.disabled=true;button.textContent='检查中…';try{const payload=await (await fetch('/api/check-configured-devices',{method:'POST'})).json();const available=(payload.devices||[]).filter(device=>device.available).length;$('summary').textContent=payload.error||`${available}/2 台设备当前可被 Windows 发现；接收器会独立重连`;}catch(_){$('summary').textContent='BLE 可见性检查失败';}finally{button.disabled=false;button.textContent='检查 BLE 可见性';}}
+    async function poll(){try{const payload=await (await fetch('/api/live?'+Date.now(),{cache:'no-store'})).json();renderAll(payload);}catch(_){$('summary').textContent='等待本地监控服务';}finally{setTimeout(poll,250);}}
+    $('scanBtn').onclick=check; DEVICE_ORDER.forEach(name=>ensureCard(name)); poll(); window.addEventListener('resize',()=>poll());
+  </script>
+</body>
+</html>
