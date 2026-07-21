@@ -1,0 +1,29 @@
+# Raw and generated sensor data
+/data/
+/imu_output/
+/imu-output/
+/outputs/
+*.csv
+*.txt
+*.bin
+*.mat
+*.wplay
+
+# Nested repositories, dependencies, and generated working files
+/.publish/
+/schedule_xlsx_work/node_modules/
+/schedule_xlsx_work/
+/.docx_render/
+/.docx_tmp/
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

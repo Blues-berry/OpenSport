@@ -1,0 +1,34 @@
+# 耳机 IMU 数据检查与动作分析
+
+本目录包含质量检查、清洗、特征分析和逻辑回归训练脚本，也可用 `run_pipeline.py` 一次完成：
+
+```powershell
+python imu_analysis/run_pipeline.py "data" --work-dir "imu_output/all_data"
+```
+
+若系统 `python` 不可用，请换成实际 Python 可执行文件。仅依赖 `numpy` 和 `pandas`。
+
+## 输出
+
+- `reports/quality/quality_report.md`：数据量、时长、采样率、缺失、零值、重复和候选异常概览。
+- `reports/quality/quality_files.csv`：每次采集一行的质量信息。
+- `reports/quality/quality_channels.csv`：每个通道、每次采集的详细质量统计。
+- `processed/cleaned/<采集名>/data.csv`：清洗后的副本，原始数据不会被覆盖。
+- `processed/cleaned/cleaning_log.csv`：每通道修复数量。
+- `reports/features/window_features.csv`：2 秒、50% 重叠窗口的特征，可直接用于建模。
+- `reports/features/activity_feature_means.csv`：各动作特征均值。
+- `reports/features/state_effect_sizes.csv`：运动/非运动标准化差异。
+- `reports/features/action_pairwise_distances.csv`：各动作两两之间的标准化距离。
+- `reports/features/action_loro_predictions.csv`：按整段留一的动作初步验证明细。
+- `reports/features/analysis_report.md`：动作差异、初步验证和策略建议。
+- `model/model_report.md`：L2 正则化逻辑回归的嵌套分组验证结果。
+- `model/l2_logistic_model.pkl`：全量训练后的模型参数、特征名和阈值。
+
+## 清洗原则
+
+1. 只把两侧同号且数值接近的单点零值视为掉点，避免误删量化零值和真实零交叉。
+2. 使用保守的 Hampel 滚动中位数/MAD 加相邻点连续性条件标记孤立尖峰，不按固定幅值粗暴裁剪运动峰值。
+3. 只插值不超过约 0.25 秒的短缺口，长时间掉数继续保留为空。
+4. 默认平滑窗约 0.06 秒，以减少噪声但保留人体动作的主要频率成分。
+5. 只对原始加速度/角速度做上述清洗；不独立平滑四元数，也不把冻结的欧拉角“修”成伪数据。
+6. 始终另存清洗数据，并在日志里保留修复计数。
