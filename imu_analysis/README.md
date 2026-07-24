@@ -8,21 +8,26 @@ python imu_analysis/run_pipeline.py "data" --work-dir "imu_output/all_data"
 
 若系统 `python` 不可用，请换成实际 Python 可执行文件。仅依赖 `numpy` 和 `pandas`。
 
-二分类训练默认根据 `imu_common.py` 的当前动作分类表重新生成
-`exercise / non_exercise / ambiguous / wear_artifact` 标签，避免复用特征缓存时
-把历史 `state` 标签错误带入新模型。标签差异写入 `model/label_audit.csv`。
-只有在确认特征 CSV 已含外部审核标签时，才显式传入
-`train_logistic.py --label-source input`。
+权威标签为 `label_schema.py` 定义的 Schema v2。每个可训练段同时具有
+`motion_state` 和 `activity_id`；旧逻辑回归管线只作为回滚保留，读取到
+Schema v2 特征时优先使用 `motion_state`，不再重新按中文名称猜标签。
 
 多动作 Demo 使用独立的新管线：
 
-- `activity_taxonomy.py`：8 类目标动作、困难负样本和混合文件安全规则。
+- `label_schema.py`：双层标签 schema、完整动作名称审核表、佩戴规则和旧格式兼容。
+- `activity_taxonomy.py`：运行时类别名称及运动/非运动类别集合。
 - `activity_features.py`：训练/实时共用的 50 Hz、4 秒窗口特征合同。
 - `train_activity_model.py`：按用户切分、LightGBM 训练、温度校准和验收报告。
 - `activity_runtime.py`：只负责流式概率输出。
 - `workout_strategy.py`：组内/组间、组数、动作切换和 10 分钟训练段规则。
 - `workout_store.py`：SQLite 事件审计和前端日汇总。
 - `ble_protocol.py`：14 字节精简六轴样本及批量 CRC16 协议。
+
+多动作训练只读取同目录 `labels/<CSV文件名>.labels.json` 中经过校验的
+Schema v2 段。未知完整名称、佩戴异常、污染短记录和所有超过 180 秒的
+`session_weak` 记录均不产生训练窗口。长会话的 `weak_targets` 只用于动作
+覆盖、顺序、总组数和次数等会话级验证。旧 timeline 只兼容 180 秒以内的
+人工短记录，不能为长记录制造逐窗标签。
 
 ## 输出
 

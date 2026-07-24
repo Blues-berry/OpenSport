@@ -35,8 +35,13 @@ class StrategySnapshot:
 class WorkoutStrategy:
     """Convert noisy window probabilities into sets, rests and workout sessions."""
 
-    def __init__(self, config: StrategyConfig | None = None):
+    def __init__(
+        self,
+        config: StrategyConfig | None = None,
+        motion_actions: list[str] | tuple[str, ...] | None = None,
+    ):
         self.config = config or StrategyConfig()
+        self.motion_actions = tuple(motion_actions or TARGET_ACTIONS)
         self.snapshot = StrategySnapshot()
         self._candidate_action: str | None = None
         self._candidate_since: float | None = None
@@ -136,7 +141,13 @@ class WorkoutStrategy:
         return []
 
     def update(self, timestamp: float, probabilities: dict[str, float], signal_quality: str = "good") -> tuple[StrategySnapshot, list[dict]]:
-        target = {action: float(probabilities.get(action, 0.0)) for action in TARGET_ACTIONS}
+        target = {
+            action: float(probabilities.get(action, 0.0))
+            for action in self.motion_actions
+        }
+        if not target:
+            self.snapshot.motion_probability = 0.0
+            return self.snapshot, []
         action = max(target, key=target.get)
         probability = target[action]
         motion_probability = min(1.0, sum(target.values()))

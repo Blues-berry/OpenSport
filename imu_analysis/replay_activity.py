@@ -15,6 +15,8 @@ from activity_runtime import RuntimeCoordinator
 from imu_common import ACC_COLS, GYRO_COLS, read_imu_csv
 from train_activity_model import recording_duration
 from workout_store import WorkoutStore
+from label_schema import load_label_document
+from weak_session import evaluate_weak_session
 
 
 def replay_file(
@@ -51,6 +53,18 @@ def replay_file(
             "last_inference": runtime.last_result,
         }
     )
+    label_path = source.parent / "labels" / f"{source.stem}.labels.json"
+    if label_path.exists():
+        label = load_label_document(label_path)
+        if label.get("annotation_scope") == "session_weak":
+            predicted = [
+                activity
+                for session in summary.get("sessions", [])
+                for activity in session.get("activities", [])
+            ]
+            summary["weak_validation"] = evaluate_weak_session(
+                label.get("weak_targets", {}), predicted
+            )
     return summary
 
 

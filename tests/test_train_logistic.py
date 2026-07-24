@@ -34,3 +34,16 @@ def test_training_can_explicitly_preserve_input_labels():
 
     assert labelled.loc[0, "state"] == "non_exercise"
     assert bool(labelled.loc[0, "label_changed"])
+
+
+def test_legacy_binary_trainer_prefers_schema_v2_motion_state():
+    source = pd.DataFrame(
+        {
+            "exact_activity_id": ["free_walk", "speaking", "removed_wear"],
+            "motion_state": ["motion", "non_motion", None],
+            "state": ["non_exercise", "exercise", "non_exercise"],
+            "capture_group": ["walk", "speak", "wear"],
+        }
+    )
+    labelled, _ = apply_label_policy(source, LABEL_SOURCE_TAXONOMY)
+    assert labelled["state"].tolist() == ["exercise", "non_exercise", "unlabelled"]

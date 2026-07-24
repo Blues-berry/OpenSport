@@ -40,8 +40,16 @@ LABEL_SOURCE_INPUT = "input"
 def apply_label_policy(data: pd.DataFrame, label_source: str) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Apply one explicit label policy and report stale input-label differences."""
     result = data.copy()
-    result["input_state"] = result["state"].astype(str)
-    result["taxonomy_state"] = result["activity"].astype(str).map(state_from_activity)
+    if "motion_state" in result:
+        result["input_state"] = result.get(
+            "state", pd.Series("unlabelled", index=result.index)
+        ).astype(str)
+        result["taxonomy_state"] = result["motion_state"].map(
+            {"motion": "exercise", "non_motion": "non_exercise"}
+        ).fillna("unlabelled")
+    else:
+        result["input_state"] = result["state"].astype(str)
+        result["taxonomy_state"] = result["activity"].astype(str).map(state_from_activity)
     if label_source == LABEL_SOURCE_TAXONOMY:
         result["state"] = result["taxonomy_state"]
     elif label_source == LABEL_SOURCE_INPUT:
@@ -49,13 +57,14 @@ def apply_label_policy(data: pd.DataFrame, label_source: str) -> tuple[pd.DataFr
     else:
         raise ValueError(f"Unsupported label source: {label_source}")
     result["label_changed"] = result["input_state"] != result["taxonomy_state"]
+    audit_key = "exact_activity_id" if "exact_activity_id" in result else "activity"
     audit = (
-        result.groupby(["activity", "input_state", "taxonomy_state"], as_index=False)
+        result.groupby([audit_key, "input_state", "taxonomy_state"], as_index=False)
         .agg(
-            windows=("activity", "size"),
+            windows=(audit_key, "size"),
             capture_sessions=("capture_group", "nunique"),
         )
-        .sort_values(["activity", "input_state", "taxonomy_state"])
+        .sort_values([audit_key, "input_state", "taxonomy_state"])
     )
     return result, audit
 
@@ -211,8 +220,18 @@ def main() -> None:
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
     data = pd.read_csv(args.features_csv)
+    if "activity" not in data and "exact_activity_id" in data:
+        data["activity"] = data["exact_activity_id"]
+    if "recording" not in data and "capture_id" in data:
+        data["recording"] = data["capture_id"]
+    if "capture_group" not in data and "capture_id" in data:
+        data["capture_group"] = data["capture_id"]
+    if "source_format" not in data and "label_schema_version" in data:
+        data["source_format"] = "reviewed_schema_v2"
     feature_cols = [column for column in FEATURES if column in data.columns]
-    required = {"state", "capture_group", "activity", "source_format"}
+    required = {"capture_group", "source_format"}
+    if "motion_state" not in data:
+        required |= {"state", "activity"}
     if missing := required - set(data.columns):
         raise SystemExit(f"Missing required columns: {sorted(missing)}")
     if len(feature_cols) < 8:

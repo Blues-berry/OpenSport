@@ -13,73 +13,122 @@ import numpy as np
 import pandas as pd
 
 from activity_features import HOP_SECONDS, TARGET_RATE_HZ, WINDOW_SECONDS, iter_feature_windows, uniform_resample
-from activity_taxonomy import ACTION_NAMES_ZH, TARGET_ACTIONS, capture_identity
+from activity_taxonomy import ACTION_NAMES_ZH, capture_identity
 from imu_common import ACC_COLS, GYRO_COLS, read_imu_csv
+from label_schema import (
+    MIN_SUBJECTS_FOR_MODEL_CLASS,
+    SCHEMA_VERSION,
+    SHORT_RECORDING_MAX_SECONDS,
+    load_label_document,
+    motion_state_for_activity,
+    taxonomy_version,
+)
 
 
-CLASSES = ("non_exercise", "unknown_motion", *TARGET_ACTIONS)
+def label_trainability(path: Path) -> bool | None:
+    """Read Schema v2 or a conservatively converted legacy label."""
+    label_path = path.parent / "labels" / f"{path.stem}.labels.json"
+    if not label_path.exists():
+        return None
+    payload = load_label_document(label_path)
+    value = payload.get("window_trainable")
+    return value if isinstance(value, bool) else None
 
 
 def recording_duration(frame: pd.DataFrame) -> float:
     values = frame.get("时间")
     if values is None or len(values) < 2:
         return max(0.0, (len(frame) - 1) / 100.0)
-    parsed = pd.to_timedelta(values.astype(str).str.strip(), errors="coerce").dt.total_seconds()
-    parsed = parsed.dropna()
-    if len(parsed) < 2:
-        return max(0.0, (len(frame) - 1) / 100.0)
-    duration = float(parsed.iloc[-1] - parsed.iloc[0])
+    text = values.astype(str).str.strip()
+    has_date = bool(text.str.match(r"^\d{4}-\d{1,2}-\d{1,2}\s+").any())
+    if has_date:
+        parsed_datetime = pd.to_datetime(
+            text, format="%Y-%m-%d %H:%M:%S.%f", errors="coerce"
+        )
+        valid_datetime = parsed_datetime.dropna()
+    else:
+        valid_datetime = pd.Series(dtype="datetime64[ns]")
+    if len(valid_datetime) >= 2:
+        duration = float(
+            (valid_datetime.iloc[-1] - valid_datetime.iloc[0]).total_seconds()
+        )
+    else:
+        parsed_delta = pd.to_timedelta(text, errors="coerce").dt.total_seconds().dropna()
+        if len(parsed_delta) < 2:
+            return max(0.0, (len(frame) - 1) / 100.0)
+        duration = float(parsed_delta.iloc[-1] - parsed_delta.iloc[0])
     if duration < 0:
         duration += 86400.0
     return duration
 
 
 def read_timeline(path: Path | None) -> pd.DataFrame:
-    columns = ["source_file", "start_s", "end_s", "action_id", "phase", "set_id"]
+    """Read the legacy timeline interface and add dual-label fields."""
+    columns = [
+        "source_file", "start_s", "end_s", "activity_id", "motion_state",
+        "wear_state", "phase", "set_id", "window_trainable",
+    ]
     if path is None or not path.exists():
         return pd.DataFrame(columns=columns)
     timeline = pd.read_csv(path, encoding="utf-8-sig")
-    missing = set(columns[:-1]) - set(timeline.columns)
+    if "activity_id" not in timeline and "action_id" in timeline:
+        timeline["activity_id"] = timeline["action_id"]
+    required = {"source_file", "start_s", "end_s", "activity_id", "phase"}
+    missing = required - set(timeline.columns)
     if missing:
         raise ValueError(f"Timeline is missing columns: {sorted(missing)}")
     if "set_id" not in timeline:
         timeline["set_id"] = ""
+    if "motion_state" not in timeline:
+        timeline["motion_state"] = timeline["activity_id"].map(motion_state_for_activity)
+    if "wear_state" not in timeline:
+        timeline["wear_state"] = "valid"
+    if "window_trainable" not in timeline:
+        timeline["window_trainable"] = True
     timeline["source_file"] = timeline["source_file"].astype(str).map(lambda value: Path(value).name)
     return timeline[columns]
 
 
 def labelled_intervals(path: Path, duration_s: float, timeline: pd.DataFrame) -> list[dict]:
+    if duration_s > SHORT_RECORDING_MAX_SECONDS:
+        return []
     selected = timeline[timeline["source_file"].eq(path.name)]
     if not selected.empty:
         intervals = selected.to_dict("records")
     else:
-        identity = capture_identity(path)
-        if not identity.usable_without_timeline or identity.action_id is None:
+        label_path = path.parent / "labels" / f"{path.stem}.labels.json"
+        if not label_path.exists():
             return []
-        intervals = [
-            {
-                "source_file": path.name,
-                "start_s": 1.0,
-                "end_s": max(1.0, duration_s - 1.0),
-                "action_id": identity.action_id,
-                "phase": identity.phase,
-                "set_id": "",
-            }
-        ]
+        document = load_label_document(label_path)
+        if document.get("annotation_scope") != "full_recording":
+            return []
+        intervals = document.get("segments", [])
     normalized = []
     for row in intervals:
+        if not bool(row.get("window_trainable", False)):
+            continue
         phase = str(row["phase"]).strip()
-        action = str(row["action_id"]).strip()
+        activity_id = str(row["activity_id"]).strip()
+        motion_state = row.get("motion_state")
+        wear_state = str(row.get("wear_state", "valid"))
         if phase in {"calibration", "transition"}:
             continue
-        if phase in {"inter_set", "non_exercise"}:
-            action = "non_exercise"
-        if action not in CLASSES:
-            action = "unknown_motion" if phase == "active_set" else "non_exercise"
+        if motion_state not in {"motion", "non_motion"} or wear_state != "valid":
+            continue
         start = max(0.0, float(row["start_s"]))
         end = min(duration_s, float(row["end_s"]))
         if end - start >= WINDOW_SECONDS:
-            normalized.append({**row, "start_s": start, "end_s": end, "action_id": action, "phase": phase})
+            normalized.append(
+                {
+                    **row,
+                    "start_s": start,
+                    "end_s": end,
+                    "activity_id": activity_id,
+                    "motion_state": motion_state,
+                    "wear_state": wear_state,
+                    "phase": phase,
+                }
+            )
     return normalized
 
 
@@ -91,8 +140,16 @@ def build_feature_dataset(data_dir: Path, timeline_path: Path | None, max_window
         identity = capture_identity(path)
         frame = read_imu_csv(path)
         duration = recording_duration(frame)
+        trainable = label_trainability(path)
         intervals = labelled_intervals(path, duration, timeline)
-        reason = "" if intervals else "mixed_or_unlabelled_without_timeline"
+        if duration > SHORT_RECORDING_MAX_SECONDS:
+            reason = "session_weak_over_180_seconds"
+        elif trainable is False:
+            reason = "label_marked_not_window_trainable"
+        elif not intervals:
+            reason = "missing_or_unreviewed_dual_label"
+        else:
+            reason = ""
         manifest.append(
             {
                 "source_file": path.name,
@@ -100,6 +157,7 @@ def build_feature_dataset(data_dir: Path, timeline_path: Path | None, max_window
                 "subject_id": identity.subject_id,
                 "raw_action": identity.raw_action,
                 "duration_s": round(duration, 3),
+                "label_trainable": trainable,
                 "intervals": len(intervals),
                 "included": bool(intervals),
                 "excluded_reason": reason,
@@ -120,7 +178,10 @@ def build_feature_dataset(data_dir: Path, timeline_path: Path | None, max_window
                 capture_rows.append(
                     {
                         **features,
-                        "action_id": interval["action_id"],
+                        "exact_activity_id": interval["activity_id"],
+                        "action_id": interval["activity_id"],
+                        "motion_state": interval["motion_state"],
+                        "wear_state": interval["wear_state"],
                         "phase": interval["phase"],
                         "set_id": interval.get("set_id", ""),
                         "subject_id": identity.subject_id,
@@ -128,6 +189,8 @@ def build_feature_dataset(data_dir: Path, timeline_path: Path | None, max_window
                         "source_file": path.name,
                         "window_start_s": round(float(interval["start_s"]) + local_start, 3),
                         "window_end_s": round(float(interval["start_s"]) + local_end, 3),
+                        "label_schema_version": SCHEMA_VERSION,
+                        "taxonomy_version": taxonomy_version(),
                     }
                 )
         if len(capture_rows) > max_windows_per_capture:
@@ -135,6 +198,53 @@ def build_feature_dataset(data_dir: Path, timeline_path: Path | None, max_window
             capture_rows = [capture_rows[index] for index in indices]
         rows.extend(capture_rows)
     return pd.DataFrame(rows), pd.DataFrame(manifest)
+
+
+def collapse_rare_classes(
+    data: pd.DataFrame,
+    minimum_subjects: int = MIN_SUBJECTS_FOR_MODEL_CLASS,
+) -> tuple[pd.DataFrame, dict[str, int]]:
+    """Preserve exact labels while grouping classes without cross-user support."""
+    result = data.copy()
+    if "exact_activity_id" not in result:
+        result["exact_activity_id"] = result["action_id"]
+    support = (
+        result.groupby("exact_activity_id")["subject_id"].nunique().astype(int).to_dict()
+    )
+    rare = result["exact_activity_id"].map(support).fillna(0).astype(int) < minimum_subjects
+    result.loc[rare & result["motion_state"].eq("motion"), "action_id"] = "other_motion"
+    result.loc[rare & result["motion_state"].eq("non_motion"), "action_id"] = "other_non_motion"
+    return result, support
+
+
+def weak_session_manifest(data_dir: Path, split_data: pd.DataFrame) -> list[dict]:
+    """Return long-session targets with the subject split inherited safely."""
+    subject_split = (
+        split_data[["subject_id", "split"]]
+        .drop_duplicates()
+        .set_index("subject_id")["split"]
+        .astype(str)
+        .to_dict()
+    )
+    sessions = []
+    labels_dir = data_dir / "labels"
+    for label_path in sorted(labels_dir.glob("*.labels.json")):
+        document = load_label_document(label_path)
+        if document.get("annotation_scope") != "session_weak":
+            continue
+        subject = str(document.get("participant", "unknown-subject"))
+        split = subject_split.get(subject, "unassigned")
+        sessions.append(
+            {
+                "source_file": Path(str(document.get("csv_file", ""))).name,
+                "subject_id": subject,
+                "split": split,
+                "formal_evaluation": split in {"validation", "test"},
+                "duration_seconds": document.get("recording", {}).get("duration_seconds"),
+                "weak_targets": document.get("weak_targets", {}),
+            }
+        )
+    return sessions
 
 
 def split_by_subject(data: pd.DataFrame, seed: int = 20260723) -> pd.DataFrame:
@@ -170,7 +280,9 @@ def select_holdout_subjects(
     holdout_count = min(len(subjects) - 1, max(1, int(round(len(subjects) * test_size))))
     all_classes = set(frame["action_id"].astype(str))
     class_subjects = frame.groupby("action_id")["subject_id"].nunique()
-    feasible_holdout = {label for label, count in class_subjects.items() if int(count) >= 2}
+    feasible_holdout = sorted(
+        label for label, count in class_subjects.items() if int(count) >= 2
+    )
     global_share = frame["action_id"].value_counts(normalize=True)
     rng = np.random.default_rng(seed)
     best_subjects: set[str] | None = None
@@ -183,7 +295,7 @@ def select_holdout_subjects(
             continue
         held = frame[frame["subject_id"].isin(holdout)]
         held_labels = set(held["action_id"].astype(str))
-        coverage = len(held_labels & feasible_holdout)
+        coverage = len(held_labels.intersection(feasible_holdout))
         held_share = held["action_id"].value_counts(normalize=True)
         distribution_error = float(
             sum(abs(float(held_share.get(label, 0.0)) - float(global_share.get(label, 0.0)))
@@ -243,12 +355,16 @@ def motion_metric(
 ) -> dict:
     from sklearn.metrics import accuracy_score, confusion_matrix, f1_score, precision_score, recall_score
 
-    eligible = frame["action_id"].eq("non_exercise") | frame["action_id"].isin(TARGET_ACTIONS)
+    eligible = frame["motion_state"].isin(["motion", "non_motion"])
     selected = frame.loc[eligible]
     selected_probability = probabilities[eligible.to_numpy()]
-    target_indices = [classes.index(action) for action in TARGET_ACTIONS if action in classes]
-    motion_probability = selected_probability[:, target_indices].sum(axis=1)
-    actual = selected["action_id"].isin(TARGET_ACTIONS).astype(int).to_numpy()
+    motion_indices = [
+        index
+        for index, action in enumerate(classes)
+        if motion_state_for_activity(action) == "motion"
+    ]
+    motion_probability = selected_probability[:, motion_indices].sum(axis=1)
+    actual = selected["motion_state"].eq("motion").astype(int).to_numpy()
     predicted = (motion_probability >= 0.5).astype(int)
     return {
         "samples": int(len(actual)),
@@ -267,11 +383,12 @@ def train_model(dataset: pd.DataFrame, output_dir: Path, seed: int = 20260723) -
         raise SystemExit("Install training dependencies: pip install lightgbm scikit-learn") from error
 
     metadata = {
-        "action_id", "phase", "set_id", "subject_id", "capture_id", "source_file",
-        "window_start_s", "window_end_s", "split",
+        "action_id", "exact_activity_id", "motion_state", "wear_state", "phase",
+        "set_id", "subject_id", "capture_id", "source_file", "window_start_s",
+        "window_end_s", "split", "label_schema_version", "taxonomy_version",
     }
     features = sorted(column for column in dataset.columns if column not in metadata)
-    classes = [label for label in CLASSES if label in set(dataset["action_id"])]
+    classes = sorted(set(dataset["action_id"]))
     class_to_index = {label: index for index, label in enumerate(classes)}
     train = dataset[dataset["split"].eq("train")]
     validation = dataset[dataset["split"].eq("validation")]
@@ -338,22 +455,28 @@ def train_model(dataset: pd.DataFrame, output_dir: Path, seed: int = 20260723) -
         dataset.groupby("action_id")["subject_id"].nunique().astype(int).to_dict()
     )
     single_subject_targets = [
-        action for action in TARGET_ACTIONS if int(subject_coverage.get(action, 0)) < 2
+        action for action in classes if int(subject_coverage.get(action, 0)) < 2
+    ]
+    motion_classes = [
+        action for action in classes if motion_state_for_activity(action) == "motion"
     ]
     demo_ready = (
         metrics["validation"]["motion"]["macro_f1"] >= 0.90
         and metrics["test"]["motion"]["macro_f1"] >= 0.90
         and metrics["test"]["macro_f1"] >= 0.80
-        and all(int(target_test_support.get(action, 0)) > 0 for action in TARGET_ACTIONS)
+        and all(int(target_test_support.get(action, 0)) > 0 for action in classes)
     )
     payload = {
-        "format_version": 1,
+        "format_version": 2,
         "model_family": "lightgbm_multiclass",
         "model": model,
         "features": features,
         "classes": classes,
-        "class_names_zh": {key: ACTION_NAMES_ZH[key] for key in classes},
-        "target_actions": [action for action in TARGET_ACTIONS if action in classes],
+        "class_names_zh": {key: ACTION_NAMES_ZH.get(key, key) for key in classes},
+        "motion_classes": motion_classes,
+        "target_actions": motion_classes,
+        "label_schema_version": SCHEMA_VERSION,
+        "taxonomy_version": taxonomy_version(),
         "sample_rate_hz": TARGET_RATE_HZ,
         "window_seconds": WINDOW_SECONDS,
         "hop_seconds": HOP_SECONDS,
@@ -378,16 +501,20 @@ def train_model(dataset: pd.DataFrame, output_dir: Path, seed: int = 20260723) -
         "acceptance_thresholds": {
             "motion_macro_f1": 0.90,
             "action_macro_f1": 0.80,
-            "all_target_actions_present_in_test": True,
+            "all_model_classes_present_in_test": True,
         },
         "subject_coverage_by_class": subject_coverage,
+        "subject_coverage_by_exact_activity": (
+            dataset.groupby("exact_activity_id")["subject_id"].nunique().astype(int).to_dict()
+        ),
+        "rare_class_minimum_subjects": MIN_SUBJECTS_FOR_MODEL_CLASS,
         "targets_without_two_subjects": single_subject_targets,
         "metrics": metrics,
         "split_counts": dataset.groupby(["split", "action_id"]).size().unstack(fill_value=0).to_dict(orient="index"),
     }
     (output_dir / "metrics.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     test_counts = report["split_counts"]["test"]
-    missing_test = [action for action in TARGET_ACTIONS if int(test_counts.get(action, 0)) == 0]
+    missing_test = [action for action in classes if int(test_counts.get(action, 0)) == 0]
     model_card = f"""# IMU Demo 动作模型卡
 
 - 模型：LightGBM 多分类，{len(features)} 个窗口特征
@@ -410,7 +537,8 @@ def train_model(dataset: pd.DataFrame, output_dir: Path, seed: int = 20260723) -
 
 - 混合动作文件没有逐时刻标签时不参与训练。
 - 组间状态由时序状态机判断，不是单窗口模型类别。
-- 普通走路不计入正式锻炼。
+- “运动”按身体活动定义；走路、上下楼和坐起站起均属于运动。
+- 佩戴取下、不对称佩戴和其他佩戴异常不进入窗口训练。
 - 平板支撑以及头部运动很弱的器械动作容易与静止休息混淆。
 - 未通过验收门槛的模型不得自动提升为冠军版本。
 """
@@ -430,14 +558,40 @@ def main() -> None:
     if args.features_csv and args.features_csv.exists():
         dataset = pd.read_csv(args.features_csv, encoding="utf-8-sig")
         manifest = pd.DataFrame()
+        required_cache = {
+            "label_schema_version", "taxonomy_version", "exact_activity_id",
+            "motion_state", "wear_state",
+        }
+        if missing := required_cache - set(dataset.columns):
+            raise SystemExit(
+                f"Feature cache predates dual labels; missing columns: {sorted(missing)}"
+            )
+        if set(dataset["label_schema_version"].astype(str)) != {SCHEMA_VERSION}:
+            raise SystemExit("Feature cache label schema version is stale")
+        if set(dataset["taxonomy_version"].astype(str)) != {taxonomy_version()}:
+            raise SystemExit("Feature cache taxonomy version is stale")
     else:
         dataset, manifest = build_feature_dataset(
             args.data_dir, args.timeline, max_windows_per_capture=args.max_windows_per_capture
         )
         dataset.to_csv(args.output_dir / "window_features.csv", index=False, encoding="utf-8-sig")
         manifest.to_csv(args.output_dir / "data_manifest.csv", index=False, encoding="utf-8-sig")
+    dataset, _ = collapse_rare_classes(dataset)
     dataset = split_by_subject(dataset)
     dataset.to_csv(args.output_dir / "window_features_with_split.csv", index=False, encoding="utf-8-sig")
+    sessions = weak_session_manifest(args.data_dir, dataset)
+    (args.output_dir / "weak_session_targets.json").write_text(
+        json.dumps(
+            {
+                "schema_version": SCHEMA_VERSION,
+                "taxonomy_version": taxonomy_version(),
+                "sessions": sessions,
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
     report = train_model(dataset, args.output_dir / "model")
     print(json.dumps(report, ensure_ascii=False, indent=2))
 

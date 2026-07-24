@@ -159,7 +159,7 @@ python `
 
 ### Demo 多动作模型
 
-新链路采用 50 Hz 六轴输入、4 秒窗口、0.5 秒步长的 LightGBM 多分类模型。模型只输出概率；组内、组间、训练段和每日汇总由独立状态机处理。
+新链路采用 50 Hz 六轴输入、4 秒窗口、0.5 秒步长的 LightGBM 多分类模型。一个模型同时输出具体 `activity_id`，并把所有 `motion` 类别的概率相加得到 `motion_probability`；组内、组间、训练段和每日汇总由独立状态机处理。
 
 安装依赖：
 
@@ -176,7 +176,26 @@ python `
   --output-dir imu_output\activity_multiclass
 ```
 
-混合动作和多组文件必须按 `data_collection_timeline_template.csv` 的格式提供逐段标签，再通过 `--timeline <文件>` 传入。没有时间轴的混合文件会被自动排除。
+训练前先生成或复核统一双层标签：
+
+```powershell
+python scripts\build_filename_labels.py `
+  --training-dir data\training\activity `
+  --labels-dir data\training\activity\labels `
+  --report imu_output\dual_label_audit.json `
+  --apply
+```
+
+语义标签只来自 `label_schema.py` 中逐项审核的完整动作名称，不使用子串猜测。正好 180 秒及以下的单动作记录可整段标注；超过 180 秒的记录一律保存为 `session_weak`，只记录动作清单、顺序、组数、次数和过程说明，不生成逐窗监督标签。旧 timeline 仅作为短记录兼容接口，不能覆盖长会话限制。
+
+每个短记录段同时包含：
+
+- `motion_state`：`motion / non_motion`；佩戴异常为 `null`。
+- `activity_id`：规范的具体运动或非运动内容。
+- `wear_state`：`valid / removed / asymmetric / invalid`。
+- `phase`、`window_trainable`、`label_source`、`confidence` 和审核备注。
+
+当前“运动”采用身体活动口径：走路、跑步机走路、爬坡、上下楼、坐起站起、弯腰和健身动作属于运动；说话、咀嚼、喝水、游戏及单纯头部动作属于非运动。佩戴取下、不对称佩戴、挂脖和掉落均不可训练。
 
 主要产物：
 
@@ -184,6 +203,11 @@ python `
 - `activity_model.txt`：LightGBM 原生模型。
 - `metrics.json`：固定用户切分的动作与运动二分类指标，并包含 `demo_ready` 验收结果。
 - `window_features.csv`：特征缓存；原始数据未变化时可通过 `--features-csv` 加快重训。
+- `data_manifest.csv`：每个文件是否进入窗口训练及排除原因。
+- `dual_label_audit.json`：逐文件双层标签和长会话弱目标审计。
+- `weak_session_targets.json`：长会话继承受试者切分后的弱验证目标；只有 validation/test 项计入正式会话指标。
+
+特征缓存包含标签 schema 与分类表版本；版本变化后旧缓存会被拒绝，必须重新提取。少于 3 名受试者的精确类别仍保留在标签中，但模型训练时合并为 `other_motion` 或 `other_non_motion`。
 
 回放一段真实数据：
 

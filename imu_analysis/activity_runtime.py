@@ -31,6 +31,9 @@ class StreamingActivityClassifier:
         self.model = self.payload["model"]
         self.features = self.payload["features"]
         self.classes = self.payload["classes"]
+        self.motion_classes = list(
+            self.payload.get("motion_classes", self.payload.get("target_actions", []))
+        )
         self.sample_rate_hz = float(self.payload["sample_rate_hz"])
         self.window_seconds = float(self.payload["window_seconds"])
         self.hop_seconds = float(self.payload["hop_seconds"])
@@ -77,18 +80,28 @@ class StreamingActivityClassifier:
         raw = np.asarray(self.model.predict_proba(vector)[0], dtype=float)
         probability = calibrated_probabilities(raw, self.temperature)
         probabilities = {label: float(value) for label, value in zip(self.classes, probability)}
-        target_actions = self.payload.get("target_actions", [])
-        motion_probability = min(1.0, sum(probabilities.get(action, 0.0) for action in target_actions))
-        action = max(target_actions, key=lambda label: probabilities.get(label, 0.0)) if target_actions else "unknown_motion"
+        motion_probability = min(
+            1.0, sum(probabilities.get(action, 0.0) for action in self.motion_classes)
+        )
+        action = max(self.classes, key=lambda label: probabilities.get(label, 0.0))
         action_probability = probabilities.get(action, 0.0)
         if action_probability < float(self.payload.get("action_threshold", 0.65)):
-            action = "unknown_motion"
+            action = "other_motion" if motion_probability >= 0.5 else "other_non_motion"
+        wear_state = "invalid" if quality.state == "poor" else "valid"
         return {
             "timestamp": now,
             "motion_probability": motion_probability,
+            "motion_state": None if wear_state != "valid" else (
+                "motion" if motion_probability >= 0.5 else "non_motion"
+            ),
             "action": action,
+            "activity_id": action,
             "action_probability": action_probability,
-            "unknown_probability": probabilities.get("unknown_motion", 0.0),
+            "wear_state": wear_state,
+            "unknown_probability": (
+                probabilities.get("other_motion", 0.0)
+                + probabilities.get("other_non_motion", 0.0)
+            ),
             "signal_quality": quality.state,
             "sequence_gaps": self.sequence_gaps,
             "probabilities": probabilities,
@@ -100,7 +113,9 @@ class RuntimeCoordinator:
 
     def __init__(self, model_path: Path, database_path: Path | str | None = None):
         self.classifier = StreamingActivityClassifier(model_path)
-        self.strategy = WorkoutStrategy()
+        self.strategy = WorkoutStrategy(
+            motion_actions=self.classifier.motion_classes,
+        )
         self.store = WorkoutStore(database_path) if database_path is not None else None
         self.last_result: dict | None = None
 
