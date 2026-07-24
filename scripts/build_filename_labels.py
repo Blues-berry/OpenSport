@@ -47,6 +47,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--report", required=True)
     parser.add_argument("--default-year", type=int, default=2026)
     parser.add_argument("--apply", action="store_true")
+    parser.add_argument(
+        "--overwrite-v2",
+        action="store_true",
+        help=(
+            "Regenerate existing Schema v2 labels. By default reviewed v2 labels "
+            "are validated and preserved."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -316,19 +324,27 @@ def main() -> int:
             metadata = parse_filename(csv_path, args.default_year)
             scan = scan_csv(csv_path, metadata["date"])
             existing = read_existing(label_path)
-            backup = labels_dir / "legacy_v1" / label_path.name
-            evidence_source = (
-                read_existing(backup)
-                if existing.get("schema_version") == SCHEMA_VERSION and backup.exists()
-                else existing
+            preserved_existing = (
+                existing.get("schema_version") == SCHEMA_VERSION
+                and not args.overwrite_v2
             )
-            document = build_document(
-                csv_path, labels_dir, metadata, scan, evidence_source
-            )
+            if preserved_existing:
+                document = existing
+            else:
+                backup = labels_dir / "legacy_v1" / label_path.name
+                evidence_source = (
+                    read_existing(backup)
+                    if existing.get("schema_version") == SCHEMA_VERSION
+                    and backup.exists()
+                    else existing
+                )
+                document = build_document(
+                    csv_path, labels_dir, metadata, scan, evidence_source
+                )
             errors = validate_v2_document(document)
             if errors:
                 raise ValueError("; ".join(errors))
-            if args.apply:
+            if args.apply and not preserved_existing:
                 if existing and existing.get("schema_version") != SCHEMA_VERSION:
                     backup = labels_dir / "legacy_v1" / label_path.name
                     backup.parent.mkdir(parents=True, exist_ok=True)
@@ -343,6 +359,11 @@ def main() -> int:
             report["files"].append(
                 {
                     "source_file": csv_path.name,
+                    "label_origin": (
+                        "preserved_reviewed_v2"
+                        if preserved_existing
+                        else "generated_review_skeleton"
+                    ),
                     "duration_seconds": document["recording"]["duration_seconds"],
                     "annotation_scope": document["annotation_scope"],
                     "window_trainable": document["window_trainable"],

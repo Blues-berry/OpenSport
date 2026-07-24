@@ -11,6 +11,7 @@ and live captures live under `imu_output/`.
 
 - `realtime_ble_imu.py`: reads WitMotion BLE IMU notifications and can write a live CSV stream.
 - `imu_analysis/`: checks recordings, cleans samples, extracts window features, and trains a small L2-regularized logistic-regression baseline.
+- [采集执行与标注规范](docs/IMU_DATA_COLLECTION_AND_LABELING_STANDARD.md)：采集方式、文件命名、Schema v2 标注、长会话弱标签和交付验收的强制标准。
 - `采集计划.md` and `IMU数据采集计划_修订标红版.docx`: data-collection plans.
 - `build_collection_plan_docx.py`: rebuilds the collection-plan document.
 
@@ -186,7 +187,7 @@ python scripts\build_filename_labels.py `
   --apply
 ```
 
-语义标签只来自 `label_schema.py` 中逐项审核的完整动作名称，不使用子串猜测。正好 180 秒及以下的单动作记录可整段标注；超过 180 秒的记录一律保存为 `session_weak`，只记录动作清单、顺序、组数、次数和过程说明，不生成逐窗监督标签。旧 timeline 仅作为短记录兼容接口，不能覆盖长会话限制。
+已有 Schema v2 人工标签会被校验并默认保留；清单脚本只为尚未标注的文件生成审核骨架，不使用子串猜测。只有明确传入 `--overwrite-v2` 才会重建现有 v2 标签。正好 180 秒及以下的单动作记录可整段标注；超过 180 秒的记录一律保存为 `session_weak`，只记录动作清单、顺序、组数、次数和过程说明，不生成逐窗监督标签。timeline 仅用于有可信边界的短记录，不能覆盖长会话限制。
 
 每个短记录段同时包含：
 

@@ -1,5 +1,5 @@
-source_file,start_s,end_s,action_id,phase,set_id
-示例.csv,0,10,non_exercise,calibration,
-示例.csv,10,45,squat,active_set,1
-示例.csv,45,75,non_exercise,inter_set,
-示例.csv,75,110,squat,active_set,2
+source_file,start_s,end_s,motion_state,activity_id,wear_state,phase,set_id,window_trainable,label_source,confidence,notes
+0725-S001-T0007.csv,0,3,non_motion,standing,valid,transition,,false,operator_event,high,开始准备段
+0725-S001-T0007.csv,3,45,motion,squat,valid,active,1,true,operator_event,high,深蹲第1组
+0725-S001-T0007.csv,45,75,non_motion,standing,valid,rest,,false,operator_event,high,组间休息
+0725-S001-T0007.csv,75,110,motion,squat,valid,active,2,true,operator_event,high,深蹲第2组

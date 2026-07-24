@@ -7,6 +7,7 @@ import pandas as pd
 from train_activity_model import (
     collapse_rare_classes,
     label_trainability,
+    read_timeline,
     recording_duration,
     split_by_subject,
 )
@@ -85,3 +86,21 @@ def test_recording_duration_handles_full_datetime_without_treating_date_as_delta
         {"时间": ["2026-7-17 15:50:21.856", "2026-7-17 15:52:24.986"]}
     )
     assert abs(recording_duration(frame) - 123.13) < 1e-6
+
+
+def test_schema_v2_timeline_template_fields_are_read_without_inference(tmp_path):
+    timeline_path = tmp_path / "timeline.csv"
+    timeline_path.write_text(
+        "source_file,start_s,end_s,motion_state,activity_id,wear_state,"
+        "phase,set_id,window_trainable,label_source,confidence,notes\n"
+        "0725-S001-T0007.csv,3,45,motion,squat,valid,active,1,true,"
+        "operator_event,high,现场事件\n",
+        encoding="utf-8",
+    )
+
+    timeline = read_timeline(timeline_path)
+
+    assert timeline.loc[0, "motion_state"] == "motion"
+    assert timeline.loc[0, "activity_id"] == "squat"
+    assert timeline.loc[0, "wear_state"] == "valid"
+    assert bool(timeline.loc[0, "window_trainable"]) is True
