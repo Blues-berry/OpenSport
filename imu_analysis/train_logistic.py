@@ -10,6 +10,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from imu_common import state_from_activity
+
 
 FEATURES = [
     "dynamic_acc_std",
@@ -31,6 +33,32 @@ FEATURES = [
     "gyro_z_std",
 ]
 
+LABEL_SOURCE_TAXONOMY = "taxonomy"
+LABEL_SOURCE_INPUT = "input"
+
+
+def apply_label_policy(data: pd.DataFrame, label_source: str) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Apply one explicit label policy and report stale input-label differences."""
+    result = data.copy()
+    result["input_state"] = result["state"].astype(str)
+    result["taxonomy_state"] = result["activity"].astype(str).map(state_from_activity)
+    if label_source == LABEL_SOURCE_TAXONOMY:
+        result["state"] = result["taxonomy_state"]
+    elif label_source == LABEL_SOURCE_INPUT:
+        result["state"] = result["input_state"]
+    else:
+        raise ValueError(f"Unsupported label source: {label_source}")
+    result["label_changed"] = result["input_state"] != result["taxonomy_state"]
+    audit = (
+        result.groupby(["activity", "input_state", "taxonomy_state"], as_index=False)
+        .agg(
+            windows=("activity", "size"),
+            capture_sessions=("capture_group", "nunique"),
+        )
+        .sort_values(["activity", "input_state", "taxonomy_state"])
+    )
+    return result, audit
+
 
 def sigmoid(value: np.ndarray) -> np.ndarray:
     value = np.clip(value, -35.0, 35.0)
@@ -48,8 +76,11 @@ def fit_model(x: pd.DataFrame, y: np.ndarray, weights: np.ndarray, c_value: floa
     z = (values - mean) / scale
     design = np.column_stack([np.ones(len(z)), z])
     beta = np.zeros(design.shape[1], dtype=float)
-    penalty = np.r_[0.0, np.full(z.shape[1], 1.0 / c_value)]
     weight_sum = weights.sum()
+    # The data loss below is normalized by total sample weight. Scale the L2
+    # term the same way so C matches the usual logistic-regression convention
+    # (sum loss * C + 0.5 * ||beta||^2) and is not tied to dataset size.
+    penalty = np.r_[0.0, np.full(z.shape[1], 1.0 / (c_value * weight_sum))]
     for _ in range(200):
         probability = sigmoid(design @ beta)
         gradient = design.T @ (weights * (probability - y)) / weight_sum + penalty * beta
@@ -167,6 +198,15 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("features_csv", type=Path)
     parser.add_argument("--output-dir", type=Path, default=Path("imu_output/model"))
+    parser.add_argument(
+        "--label-source",
+        choices=[LABEL_SOURCE_TAXONOMY, LABEL_SOURCE_INPUT],
+        default=LABEL_SOURCE_TAXONOMY,
+        help=(
+            "taxonomy 根据当前统一动作分类表重新生成标签（默认，避免历史 CSV 标签过期）；"
+            "input 原样使用特征 CSV 的 state 列"
+        ),
+    )
     args = parser.parse_args()
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -177,6 +217,10 @@ def main() -> None:
         raise SystemExit(f"Missing required columns: {sorted(missing)}")
     if len(feature_cols) < 8:
         raise SystemExit("Too few model features are available")
+    data, label_audit = apply_label_policy(data, args.label_source)
+    label_audit.to_csv(args.output_dir / "label_audit.csv", index=False, encoding="utf-8-sig")
+    changed_windows = int(data["label_changed"].sum())
+    changed_activities = sorted(data.loc[data["label_changed"], "activity"].astype(str).unique().tolist())
     # Do not silently turn protocol-ambiguous daily activities or wear
     # artifacts into negative fitness labels.
     data = data[data["state"].isin(["exercise", "non_exercise"])].copy()
@@ -187,12 +231,20 @@ def main() -> None:
     group_labels = data[["capture_group", "state"]].drop_duplicates()
     if group_labels.groupby("capture_group")["state"].nunique().max() != 1:
         raise SystemExit("A capture_group contains conflicting state labels")
+    groups_per_class = group_labels.groupby("state")["capture_group"].nunique()
+    if set(groups_per_class.index) != {"exercise", "non_exercise"}:
+        raise SystemExit("Training requires both exercise and non_exercise capture groups")
+    outer_splits = min(5, int(groups_per_class.min()))
+    if outer_splits < 2:
+        raise SystemExit("Training requires at least two capture groups per class")
 
     c_grid = [0.01, 0.1, 1.0, 10.0, 100.0]
     oof_probability = np.full(len(data), np.nan)
     fold_rows = []
     tuning_rows = []
-    for fold, (train_idx, test_idx) in enumerate(stratified_group_splits(y, groups, 5, seed=42), start=1):
+    for fold, (train_idx, test_idx) in enumerate(
+        stratified_group_splits(y, groups, outer_splits, seed=42), start=1
+    ):
         best_c, tuning = choose_c(x.iloc[train_idx].reset_index(drop=True), y[train_idx], groups[train_idx], c_grid)
         tuning.insert(0, "outer_fold", fold)
         tuning_rows.append(tuning)
@@ -212,6 +264,8 @@ def main() -> None:
             }
         )
 
+    if not np.isfinite(oof_probability).all():
+        raise RuntimeError("Grouped cross-validation did not produce a prediction for every window")
     oof_predicted = (oof_probability >= 0.5).astype(int)
     window_metrics = metric_bundle(y, oof_predicted, oof_probability)
     grouped_oof = group_predictions(y, oof_probability, groups)
@@ -259,12 +313,32 @@ def main() -> None:
     coefficient.to_csv(args.output_dir / "coefficients.csv", index=False, encoding="utf-8-sig")
     by_activity.to_csv(args.output_dir / "metrics_by_activity.csv", index=False, encoding="utf-8-sig")
     with (args.output_dir / "l2_logistic_model.pkl").open("wb") as handle:
-        pickle.dump({"model": final_model, "features": feature_cols, "threshold": 0.5, "positive_label": "exercise"}, handle)
+        pickle.dump(
+            {
+                "format_version": 2,
+                "model": final_model,
+                "features": feature_cols,
+                "threshold": 0.5,
+                "positive_label": "exercise",
+                "label_source": args.label_source,
+            },
+            handle,
+        )
     metrics = {
         "model": "L2-regularized logistic regression",
-        "label_rule": "Only explicit exercise/non_exercise protocol labels; ambiguous and wear_artifact excluded",
+        "label_source": args.label_source,
+        "label_rule": (
+            "Recomputed from the current activity taxonomy; only exercise/non_exercise retained"
+            if args.label_source == LABEL_SOURCE_TAXONOMY
+            else "Used the input state column; only exercise/non_exercise retained"
+        ),
+        "label_audit": {
+            "changed_windows": changed_windows,
+            "changed_activities": changed_activities,
+        },
         "window_seconds": 2.0,
         "threshold": 0.5,
+        "outer_group_folds": outer_splits,
         "samples_files": int(data["recording"].nunique()),
         "capture_sessions": int(data["capture_group"].nunique()),
         "windows": int(len(data)),
@@ -280,9 +354,25 @@ def main() -> None:
         "",
         "## 任务定义",
         "",
-        "当前标签中没有独立的 fitness_state 字段，因此采用协议动作的保守临时规则；只使用明确的 exercise/non_exercise，ambiguous 与 wear_artifact 不进入训练。该规则仍需采集人员确认。",
+        (
+            "当前标签中没有独立的 fitness_state 字段，因此训练时根据当前统一动作分类表重新生成标签；"
+            "只使用明确的 exercise/non_exercise，ambiguous 与 wear_artifact 不进入训练。"
+            if args.label_source == LABEL_SOURCE_TAXONOMY
+            else
+            "本次显式使用特征 CSV 的 state 标签；只使用 exercise/non_exercise，"
+            "ambiguous 与 wear_artifact 不进入训练。"
+        ),
         "",
-        "CSV 与 TXT 均作为不同样本保留。动作标签和起始时刻接近的同期样本共享 capture_group，并在五折验证中整组进入训练或测试，防止同期动作信息泄漏。正则强度 C 在每个外层训练折内再次分组验证选择。",
+        (
+            f"标签审计发现 {changed_windows} 个窗口的历史 state 与当前分类表不同，"
+            f"涉及动作：{', '.join(changed_activities) if changed_activities else '无'}。"
+            "完整明细见 label_audit.csv。"
+        ),
+        "",
+        (
+            f"同期双设备样本共享 capture_group，并在 {outer_splits} 折验证中整组进入训练或测试，"
+            "防止重叠窗口和同期设备信息泄漏。正则强度 C 在每个外层训练折内再次分组验证选择。"
+        ),
         "",
         "## 验证结果",
         "",

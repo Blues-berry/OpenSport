@@ -8,6 +8,12 @@ python imu_analysis/run_pipeline.py "data" --work-dir "imu_output/all_data"
 
 若系统 `python` 不可用，请换成实际 Python 可执行文件。仅依赖 `numpy` 和 `pandas`。
 
+二分类训练默认根据 `imu_common.py` 的当前动作分类表重新生成
+`exercise / non_exercise / ambiguous / wear_artifact` 标签，避免复用特征缓存时
+把历史 `state` 标签错误带入新模型。标签差异写入 `model/label_audit.csv`。
+只有在确认特征 CSV 已含外部审核标签时，才显式传入
+`train_logistic.py --label-source input`。
+
 多动作 Demo 使用独立的新管线：
 
 - `activity_taxonomy.py`：8 类目标动作、困难负样本和混合文件安全规则。
@@ -33,6 +39,7 @@ python imu_analysis/run_pipeline.py "data" --work-dir "imu_output/all_data"
 - `reports/features/analysis_report.md`：动作差异、初步验证和策略建议。
 - `model/model_report.md`：L2 正则化逻辑回归的嵌套分组验证结果。
 - `model/l2_logistic_model.pkl`：全量训练后的模型参数、特征名和阈值。
+- `model/label_audit.csv`：输入标签与当前动作分类表的逐动作差异。
 
 ## 清洗原则
 
