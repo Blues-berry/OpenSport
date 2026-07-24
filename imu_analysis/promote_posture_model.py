@@ -8,6 +8,7 @@ import shutil
 from pathlib import Path
 
 
+ROOT = Path(__file__).resolve().parents[1]
 MODEL_FILES = (
     "head_posture_model.pkl",
     "head_posture_model.txt",
@@ -24,7 +25,7 @@ def main() -> None:
     parser.add_argument(
         "--registry",
         type=Path,
-        default=Path("imu_output/models/posture"),
+        default=ROOT / "imu_output" / "models" / "posture",
     )
     args = parser.parse_args()
     report = json.loads(

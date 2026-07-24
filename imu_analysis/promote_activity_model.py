@@ -8,6 +8,7 @@ import shutil
 from pathlib import Path
 
 
+ROOT = Path(__file__).resolve().parents[1]
 MODEL_FILES = (
     "activity_model.pkl",
     "activity_model.txt",
@@ -29,7 +30,7 @@ def main() -> None:
     parser.add_argument(
         "--registry",
         type=Path,
-        default=Path("imu_output/models/activity"),
+        default=ROOT / "imu_output" / "models" / "activity",
     )
     args = parser.parse_args()
     candidate_report = json.loads(
