@@ -1,0 +1,52 @@
+.header-controls {
+  align-items: stretch;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.receiver-control {
+  background: #121214;
+  border: 0;
+  border-radius: 16px;
+  color: #fff;
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  min-height: 42px;
+  padding: 10px 16px;
+}
+
+.receiver-control.is-running {
+  background: #fff;
+  border: 1px solid #e1e3ea;
+  color: #d44848;
+}
+
+.receiver-control:disabled {
+  cursor: wait;
+  opacity: .6;
+}
+
+.posture-calibrate {
+  background: #eef7f2;
+  border: 1px solid #c8e7d5;
+  border-radius: 16px;
+  color: #17623a;
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  min-height: 42px;
+  padding: 10px 16px;
+}
+
+.posture-calibrate:disabled {
+  cursor: wait;
+  opacity: .6;
+}
+
+.is-hidden {
+  display: none;
+}

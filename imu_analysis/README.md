@@ -8,6 +8,16 @@ python imu_analysis/run_pipeline.py "data" --work-dir "imu_output/all_data"
 
 若系统 `python` 不可用，请换成实际 Python 可执行文件。仅依赖 `numpy` 和 `pandas`。
 
+多动作 Demo 使用独立的新管线：
+
+- `activity_taxonomy.py`：8 类目标动作、困难负样本和混合文件安全规则。
+- `activity_features.py`：训练/实时共用的 50 Hz、4 秒窗口特征合同。
+- `train_activity_model.py`：按用户切分、LightGBM 训练、温度校准和验收报告。
+- `activity_runtime.py`：只负责流式概率输出。
+- `workout_strategy.py`：组内/组间、组数、动作切换和 10 分钟训练段规则。
+- `workout_store.py`：SQLite 事件审计和前端日汇总。
+- `ble_protocol.py`：14 字节精简六轴样本及批量 CRC16 协议。
+
 ## 输出
 
 - `reports/quality/quality_report.md`：数据量、时长、采样率、缺失、零值、重复和候选异常概览。
