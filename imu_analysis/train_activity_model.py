@@ -138,22 +138,63 @@ def build_feature_dataset(data_dir: Path, timeline_path: Path | None, max_window
 
 
 def split_by_subject(data: pd.DataFrame, seed: int = 20260723) -> pd.DataFrame:
-    from sklearn.model_selection import GroupShuffleSplit
-
     result = data.copy()
     result["split"] = "train"
-    groups = result["subject_id"].astype(str)
-    first = GroupShuffleSplit(n_splits=1, test_size=0.15, random_state=seed)
-    remaining, test = next(first.split(result, result["action_id"], groups))
-    result.iloc[test, result.columns.get_loc("split")] = "test"
-    remaining_frame = result.iloc[remaining]
-    second = GroupShuffleSplit(n_splits=1, test_size=0.1765, random_state=seed + 1)
-    train_local, validation_local = next(
-        second.split(remaining_frame, remaining_frame["action_id"], remaining_frame["subject_id"])
+    test_subjects = select_holdout_subjects(result, test_size=0.15, seed=seed)
+    result.loc[result["subject_id"].astype(str).isin(test_subjects), "split"] = "test"
+    remaining = result[result["split"].eq("train")]
+    validation_subjects = select_holdout_subjects(
+        remaining, test_size=0.1765, seed=seed + 1
     )
-    validation = remaining_frame.iloc[validation_local].index
-    result.loc[validation, "split"] = "validation"
+    result.loc[result["subject_id"].astype(str).isin(validation_subjects), "split"] = "validation"
     return result
+
+
+def select_holdout_subjects(
+    data: pd.DataFrame,
+    test_size: float,
+    seed: int,
+    candidates: int = 4096,
+) -> set[str]:
+    """Choose a subject holdout that maximizes feasible class coverage.
+
+    A plain random group split can omit common actions from validation/test.
+    Classes recorded for only one subject must stay in training; all classes
+    with at least two subjects are preferred in the holdout.
+    """
+    frame = data[["subject_id", "action_id"]].copy()
+    frame["subject_id"] = frame["subject_id"].astype(str)
+    subjects = np.asarray(sorted(frame["subject_id"].unique()), dtype=object)
+    if len(subjects) < 3:
+        raise ValueError("Subject split requires at least three subjects")
+    holdout_count = min(len(subjects) - 1, max(1, int(round(len(subjects) * test_size))))
+    all_classes = set(frame["action_id"].astype(str))
+    class_subjects = frame.groupby("action_id")["subject_id"].nunique()
+    feasible_holdout = {label for label, count in class_subjects.items() if int(count) >= 2}
+    global_share = frame["action_id"].value_counts(normalize=True)
+    rng = np.random.default_rng(seed)
+    best_subjects: set[str] | None = None
+    best_score: tuple[int, float] | None = None
+    for _ in range(candidates):
+        shuffled = rng.permutation(subjects)
+        holdout = set(str(value) for value in shuffled[:holdout_count])
+        train_labels = set(frame.loc[~frame["subject_id"].isin(holdout), "action_id"].astype(str))
+        if train_labels != all_classes:
+            continue
+        held = frame[frame["subject_id"].isin(holdout)]
+        held_labels = set(held["action_id"].astype(str))
+        coverage = len(held_labels & feasible_holdout)
+        held_share = held["action_id"].value_counts(normalize=True)
+        distribution_error = float(
+            sum(abs(float(held_share.get(label, 0.0)) - float(global_share.get(label, 0.0)))
+                for label in feasible_holdout)
+        )
+        score = (coverage, -distribution_error)
+        if best_score is None or score > best_score:
+            best_subjects, best_score = holdout, score
+    if best_subjects is None:
+        raise ValueError("Could not create a subject holdout while preserving every training class")
+    return best_subjects
 
 
 def temperature_scale(probabilities: np.ndarray, labels: np.ndarray) -> float:
@@ -293,6 +334,12 @@ def train_model(dataset: pd.DataFrame, output_dir: Path, seed: int = 20260723) -
 
     output_dir.mkdir(parents=True, exist_ok=True)
     target_test_support = test["action_id"].value_counts()
+    subject_coverage = (
+        dataset.groupby("action_id")["subject_id"].nunique().astype(int).to_dict()
+    )
+    single_subject_targets = [
+        action for action in TARGET_ACTIONS if int(subject_coverage.get(action, 0)) < 2
+    ]
     demo_ready = (
         metrics["validation"]["motion"]["macro_f1"] >= 0.90
         and metrics["test"]["motion"]["macro_f1"] >= 0.90
@@ -333,6 +380,8 @@ def train_model(dataset: pd.DataFrame, output_dir: Path, seed: int = 20260723) -
             "action_macro_f1": 0.80,
             "all_target_actions_present_in_test": True,
         },
+        "subject_coverage_by_class": subject_coverage,
+        "targets_without_two_subjects": single_subject_targets,
         "metrics": metrics,
         "split_counts": dataset.groupby(["split", "action_id"]).size().unstack(fill_value=0).to_dict(orient="index"),
     }
@@ -355,6 +404,7 @@ def train_model(dataset: pd.DataFrame, output_dir: Path, seed: int = 20260723) -
 | 测试集已有类别 Macro-F1 | {metrics["validation"]["macro_f1_present_classes"]:.3f} | {metrics["test"]["macro_f1_present_classes"]:.3f} | 仅诊断 |
 
 测试集未覆盖目标动作：{", ".join(missing_test) if missing_test else "无"}。
+少于两名受试者、无法同时进入训练和测试的目标动作：{", ".join(single_subject_targets) if single_subject_targets else "无"}。
 
 ## 已知限制
 

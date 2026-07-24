@@ -13,6 +13,7 @@
 /.publish/
 /schedule_xlsx_work/node_modules/
 /schedule_xlsx_work/
+/tmp_*/
 /.docx_render/
 /.docx_tmp/
 __pycache__/

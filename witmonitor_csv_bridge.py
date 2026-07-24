@@ -1,9 +1,10 @@
 """Tail WitMotion/WitMonitor CSV recordings and feed the live dashboard.
 
 This bridge never opens BLE or a COM port.  Point WitMotion's live recording
-folder at ``IMU数据采集`` (or pass ``--source-dir``) and it will consume rows
-as the application appends them.  The expected columns are the same as the
-previously collected WitMotion CSV exports.
+folder at a dedicated runtime location (or pass ``--source-dir``) and it will
+consume rows as the application appends them.  Archived project recordings
+belong under ``data/raw``; generated normalized output belongs under
+``imu_output``.
 """
 from __future__ import annotations
 

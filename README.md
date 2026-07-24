@@ -2,6 +2,11 @@
 
 OpenSport contains tools for collecting and analyzing IMU data from ear-worn devices.
 
+The canonical local layout is documented in
+[`docs/PROJECT_STRUCTURE.md`](docs/PROJECT_STRUCTURE.md). Raw recordings and
+prepared training data live under `data/`; generated features, models, logs,
+and live captures live under `imu_output/`.
+
 ## Included tools
 
 - `realtime_ble_imu.py`: reads WitMotion BLE IMU notifications and can write a live CSV stream.
@@ -167,8 +172,8 @@ python -m pip install -r requirements.txt
 ```powershell
 python `
   imu_analysis\train_activity_model.py `
-  .\data\datafortraining `
-  --output-dir imu_output\demo_activity
+  .\data\training\activity `
+  --output-dir imu_output\activity_multiclass
 ```
 
 混合动作和多组文件必须按 `data_collection_timeline_template.csv` 的格式提供逐段标签，再通过 `--timeline <文件>` 传入。没有时间轴的混合文件会被自动排除。
@@ -221,7 +226,7 @@ python imu_analysis\realtime_activity_ble.py `
 
 ```powershell
 python imu_analysis\train_head_posture_model.py `
-  .\data\datafortraining `
+  .\data\training\activity `
   --output-dir imu_output\head_posture
 ```
 
