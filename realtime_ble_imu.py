@@ -29,6 +29,8 @@ import numpy as np
 from bleak import BleakClient, BleakScanner
 
 
+ROOT = Path(__file__).resolve().parent
+IMU_OUTPUT = ROOT / "imu_output"
 NOTIFY_UUID = "0000ffe4-0000-1000-8000-00805f9a34fb"
 DEVICES = {
     "WT22222": "F6:B1:93:B5:2B:23",
@@ -496,8 +498,8 @@ async def scan_devices(timeout: float) -> None:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", help="必填：训练输出的 l2_logistic_model.pkl")
-    parser.add_argument("--csv", default="imu_output/live_ble_imu.csv", help="BLE 规范化实时流 CSV 路径")
-    parser.add_argument("--status", default="imu_output/live_ble_status.json", help="BLE 设备状态 JSON 路径")
+    parser.add_argument("--csv", type=Path, default=IMU_OUTPUT / "live_ble_imu.csv", help="BLE 规范化实时流 CSV 路径")
+    parser.add_argument("--status", type=Path, default=IMU_OUTPUT / "live_ble_status.json", help="BLE 设备状态 JSON 路径")
     parser.add_argument("--target-rate-hz", type=float, default=TARGET_RATE_HZ, help="实时规范化采样率")
     parser.add_argument("--smooth-seconds", type=float, default=SMOOTH_SECONDS, help="因果平滑时间窗")
     parser.add_argument("--scan", action="store_true", help="仅扫描附近 BLE 设备")

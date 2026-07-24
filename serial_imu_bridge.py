@@ -28,7 +28,7 @@ def main() -> None:
     parser.add_argument("--port", default="COM3", help="WitMotion serial receiver port")
     parser.add_argument("--baud", type=int, default=9600)
     parser.add_argument("--model", type=Path, required=True)
-    parser.add_argument("--csv", type=Path, default=Path("imu_output/live_imu.csv"))
+    parser.add_argument("--csv", type=Path, default=Path(__file__).resolve().parent / "imu_output" / "live_imu.csv")
     parser.add_argument("--device", help="display name; defaults to the dashboard-selected device")
     parser.add_argument("--wait-for-port", action="store_true", help="when COM is occupied, keep retrying until it is released")
     parser.add_argument("--retry-seconds", type=float, default=3.0, help="retry interval used with --wait-for-port")

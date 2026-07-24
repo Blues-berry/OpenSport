@@ -17,7 +17,7 @@ def run(script: Path, *args: object) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("data_dir", type=Path)
-    parser.add_argument("--work-dir", type=Path, default=Path("imu_output"))
+    parser.add_argument("--work-dir", type=Path, default=Path(__file__).resolve().parents[1] / "imu_output")
     args = parser.parse_args()
     here = Path(__file__).resolve().parent
     quality = args.work_dir / "reports" / "quality"

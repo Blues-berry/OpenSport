@@ -26,7 +26,9 @@ OUTPUT_FIELDS = [
     "gx_dps", "gy_dps", "gz_dps", "roll_deg", "pitch_deg", "yaw_deg",
     "inference_label", "exercise_probability",
 ]
-DEFAULT_WITMOTION_RECORD_DIR = Path(r"D:\download\Witmotion(V2026.6.26.0)\Record")
+ROOT = Path(__file__).resolve().parent
+DEFAULT_WITMOTION_RECORD_DIR = ROOT / "data" / "raw"
+DEFAULT_LIVE_CSV = ROOT / "imu_output" / "live_imu.csv"
 
 
 def numeric(value: str | None) -> float:
@@ -97,7 +99,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source-dir", type=Path, default=DEFAULT_WITMOTION_RECORD_DIR)
     parser.add_argument("--model", type=Path, required=True)
-    parser.add_argument("--csv", type=Path, default=Path("imu_output/live_imu.csv"))
+    parser.add_argument("--csv", type=Path, default=DEFAULT_LIVE_CSV)
     parser.add_argument("--sample-rate", type=float, default=100.0)
     parser.add_argument("--poll-seconds", type=float, default=0.05)
     parser.add_argument("--include-existing", action="store_true",

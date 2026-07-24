@@ -8,7 +8,7 @@ from docx.enum.table import WD_TABLE_ALIGNMENT, WD_CELL_VERTICAL_ALIGNMENT
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 
-ROOT = Path(r"D:\coding-document\shokz\imu-earphone")
+ROOT = Path(__file__).resolve().parent
 SOURCE = ROOT / "采集计划.md"
 OUTPUT = ROOT / "IMU数据采集计划_修订标红版.docx"
 

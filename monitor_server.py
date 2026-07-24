@@ -16,10 +16,11 @@ from bleak import BleakScanner
 
 
 ROOT = Path(__file__).resolve().parent
-LIVE_CSV_PATH = ROOT / "imu_output" / "live_imu.csv"
-STATUS_PATH = ROOT / "imu_output" / "live_status.json"
-BLE_CSV_PATH = ROOT / "imu_output" / "live_ble_imu.csv"
-BLE_STATUS_PATH = ROOT / "imu_output" / "live_ble_status.json"
+IMU_OUTPUT = ROOT / "imu_output"
+LIVE_CSV_PATH = IMU_OUTPUT / "live_imu.csv"
+STATUS_PATH = IMU_OUTPUT / "live_status.json"
+BLE_CSV_PATH = IMU_OUTPUT / "live_ble_imu.csv"
+BLE_STATUS_PATH = IMU_OUTPUT / "live_ble_status.json"
 SOURCES = {
     "witmonitor": (LIVE_CSV_PATH, STATUS_PATH),
     "ble": (BLE_CSV_PATH, BLE_STATUS_PATH),
