@@ -12,6 +12,7 @@ and live captures live under `imu_output/`.
 - `realtime_ble_imu.py`: reads WitMotion BLE IMU notifications and can write a live CSV stream.
 - `imu_analysis/`: checks recordings, cleans samples, extracts window features, and trains a small L2-regularized logistic-regression baseline.
 - [采集执行与标注规范](docs/IMU_DATA_COLLECTION_AND_LABELING_STANDARD.md)：采集方式、文件命名、Schema v2 标注、长会话弱标签和交付验收的强制标准。
+- [采集与标注完整示例](docs/IMU_COLLECTION_LABELING_EXAMPLE.md)：以一次跑步机走路短试次说明原始数据、现场事件和正确双层标签。
 - `采集计划.md` and `IMU数据采集计划_修订标红版.docx`: data-collection plans.
 - `build_collection_plan_docx.py`: rebuilds the collection-plan document.
 

@@ -28,6 +28,7 @@
 6. 原始 CSV 不得覆盖、裁剪或改写；清洗、合并和重采样只能生成新文件。
 7. 同一 `subject_id` 的数据只能进入 train、validation、test 中的一个集合。
 8. 未提供 Schema v2 标签、标签校验失败或证据不足的数据一律不可训练。
+9. Schema v2 只表示结构合规，不等于真值合规。旧文件名审核映射只能作为历史引导数据，不得进入新模型正式 validation/test。
 
 ## 2. 数据类型与采集方式
 
@@ -329,3 +330,6 @@ data/training/activity/labels/0725-S001-T0007.labels.json
 9. 采集完成数量与计划数量对照表。
 
 只有审计报告中 `missing_labels=[]`、`duplicate_labels=[]`、`violation_count=0` 的批次才能进入训练目录。
+
+完整的短试次记录、现场事件和标签填写方式见
+[`IMU_COLLECTION_LABELING_EXAMPLE.md`](IMU_COLLECTION_LABELING_EXAMPLE.md)。
