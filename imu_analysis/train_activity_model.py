@@ -14,7 +14,7 @@ import pandas as pd
 
 from activity_features import HOP_SECONDS, TARGET_RATE_HZ, WINDOW_SECONDS, iter_feature_windows, uniform_resample
 from activity_taxonomy import ACTION_NAMES_ZH, capture_identity
-from imu_common import ACC_COLS, GYRO_COLS, read_imu_csv
+from imu_common import ACC_COLS, GYRO_COLS, elapsed_seconds, read_imu_csv
 from label_schema import (
     MIN_SUBJECTS_FOR_MODEL_CLASS,
     SCHEMA_VERSION,
@@ -25,12 +25,17 @@ from label_schema import (
 )
 
 
-def label_trainability(path: Path) -> bool | None:
+def label_metadata(path: Path) -> dict:
     """Read Schema v2 or a conservatively converted legacy label."""
     label_path = path.parent / "labels" / f"{path.stem}.labels.json"
     if not label_path.exists():
-        return None
+        return {}
     payload = load_label_document(label_path)
+    return payload
+
+
+def label_trainability(path: Path) -> bool | None:
+    payload = label_metadata(path)
     value = payload.get("window_trainable")
     return value if isinstance(value, bool) else None
 
@@ -67,6 +72,7 @@ def read_timeline(path: Path | None) -> pd.DataFrame:
     columns = [
         "source_file", "start_s", "end_s", "activity_id", "motion_state",
         "wear_state", "phase", "set_id", "window_trainable",
+        "label_source", "confidence", "evidence_tier",
     ]
     if path is None or not path.exists():
         return pd.DataFrame(columns=columns)
@@ -85,6 +91,12 @@ def read_timeline(path: Path | None) -> pd.DataFrame:
         timeline["wear_state"] = "valid"
     if "window_trainable" not in timeline:
         timeline["window_trainable"] = True
+    if "label_source" not in timeline:
+        timeline["label_source"] = ""
+    if "confidence" not in timeline:
+        timeline["confidence"] = ""
+    if "evidence_tier" not in timeline:
+        timeline["evidence_tier"] = "rejected"
     timeline["source_file"] = timeline["source_file"].astype(str).map(lambda value: Path(value).name)
     return timeline[columns]
 
@@ -102,7 +114,10 @@ def labelled_intervals(path: Path, duration_s: float, timeline: pd.DataFrame) ->
         document = load_label_document(label_path)
         if document.get("annotation_scope") != "full_recording":
             return []
-        intervals = document.get("segments", [])
+        intervals = [
+            {**segment, "evidence_tier": document.get("evidence_tier", "rejected")}
+            for segment in document.get("segments", [])
+        ]
     normalized = []
     for row in intervals:
         if not bool(row.get("window_trainable", False)):
@@ -132,7 +147,12 @@ def labelled_intervals(path: Path, duration_s: float, timeline: pd.DataFrame) ->
     return normalized
 
 
-def build_feature_dataset(data_dir: Path, timeline_path: Path | None, max_windows_per_capture: int = 300) -> tuple[pd.DataFrame, pd.DataFrame]:
+def build_feature_dataset(
+    data_dir: Path,
+    timeline_path: Path | None,
+    max_windows_per_capture: int = 300,
+    allow_legacy_training: bool = False,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
     timeline = read_timeline(timeline_path)
     rows: list[dict] = []
     manifest: list[dict] = []
@@ -140,12 +160,22 @@ def build_feature_dataset(data_dir: Path, timeline_path: Path | None, max_window
         identity = capture_identity(path)
         frame = read_imu_csv(path)
         duration = recording_duration(frame)
-        trainable = label_trainability(path)
+        document = label_metadata(path)
+        trainable = document.get("window_trainable")
+        evidence_tier = str(document.get("evidence_tier", "rejected"))
         intervals = labelled_intervals(path, duration, timeline)
+        if not allow_legacy_training:
+            intervals = [
+                interval
+                for interval in intervals
+                if interval.get("evidence_tier") == "gold"
+            ]
         if duration > SHORT_RECORDING_MAX_SECONDS:
             reason = "session_weak_over_180_seconds"
         elif trainable is False:
             reason = "label_marked_not_window_trainable"
+        elif evidence_tier == "legacy_reviewed" and not allow_legacy_training:
+            reason = "legacy_evidence_requires_explicit_experimental_flag"
         elif not intervals:
             reason = "missing_or_unreviewed_dual_label"
         else:
@@ -158,6 +188,7 @@ def build_feature_dataset(data_dir: Path, timeline_path: Path | None, max_window
                 "raw_action": identity.raw_action,
                 "duration_s": round(duration, 3),
                 "label_trainable": trainable,
+                "evidence_tier": evidence_tier,
                 "intervals": len(intervals),
                 "included": bool(intervals),
                 "excluded_reason": reason,
@@ -168,7 +199,13 @@ def build_feature_dataset(data_dir: Path, timeline_path: Path | None, max_window
         matrix = frame.reindex(columns=ACC_COLS + GYRO_COLS).apply(pd.to_numeric, errors="coerce").to_numpy(dtype=float)
         if not np.isfinite(matrix).all():
             matrix = pd.DataFrame(matrix).interpolate(limit_direction="both").fillna(0.0).to_numpy()
-        resampled = uniform_resample(matrix, duration, TARGET_RATE_HZ)
+        sample_seconds, _ = elapsed_seconds(frame)
+        resampled = uniform_resample(
+            matrix,
+            duration,
+            TARGET_RATE_HZ,
+            source_timestamps_s=sample_seconds,
+        )
         capture_rows: list[dict] = []
         for interval_index, interval in enumerate(intervals):
             start_index = int(math.ceil(float(interval["start_s"]) * TARGET_RATE_HZ))
@@ -191,6 +228,9 @@ def build_feature_dataset(data_dir: Path, timeline_path: Path | None, max_window
                         "window_end_s": round(float(interval["start_s"]) + local_end, 3),
                         "label_schema_version": SCHEMA_VERSION,
                         "taxonomy_version": taxonomy_version(),
+                        "evidence_tier": interval.get(
+                            "evidence_tier", evidence_tier
+                        ),
                     }
                 )
         if len(capture_rows) > max_windows_per_capture:
@@ -211,9 +251,10 @@ def collapse_rare_classes(
     support = (
         result.groupby("exact_activity_id")["subject_id"].nunique().astype(int).to_dict()
     )
+    non_motion = result["motion_state"].eq("non_motion")
+    result.loc[non_motion, "action_id"] = "other_non_motion"
     rare = result["exact_activity_id"].map(support).fillna(0).astype(int) < minimum_subjects
     result.loc[rare & result["motion_state"].eq("motion"), "action_id"] = "other_motion"
-    result.loc[rare & result["motion_state"].eq("non_motion"), "action_id"] = "other_non_motion"
     return result, support
 
 
@@ -366,13 +407,18 @@ def motion_metric(
     motion_probability = selected_probability[:, motion_indices].sum(axis=1)
     actual = selected["motion_state"].eq("motion").astype(int).to_numpy()
     predicted = (motion_probability >= 0.5).astype(int)
+    matrix = confusion_matrix(actual, predicted, labels=[0, 1])
+    specificity = (
+        float(matrix[0, 0] / matrix[0].sum()) if matrix[0].sum() else 0.0
+    )
     return {
         "samples": int(len(actual)),
         "accuracy": float(accuracy_score(actual, predicted)),
         "macro_f1": float(f1_score(actual, predicted, average="macro", zero_division=0)),
         "precision_exercise": float(precision_score(actual, predicted, zero_division=0)),
         "recall_exercise": float(recall_score(actual, predicted, zero_division=0)),
-        "confusion_matrix_rows_actual_nonexercise_exercise": confusion_matrix(actual, predicted, labels=[0, 1]).tolist(),
+        "specificity_non_exercise": specificity,
+        "confusion_matrix_rows_actual_nonexercise_exercise": matrix.tolist(),
     }
 
 
@@ -386,6 +432,7 @@ def train_model(dataset: pd.DataFrame, output_dir: Path, seed: int = 20260723) -
         "action_id", "exact_activity_id", "motion_state", "wear_state", "phase",
         "set_id", "subject_id", "capture_id", "source_file", "window_start_s",
         "window_end_s", "split", "label_schema_version", "taxonomy_version",
+        "evidence_tier",
     }
     features = sorted(column for column in dataset.columns if column not in metadata)
     classes = sorted(set(dataset["action_id"]))
@@ -440,8 +487,15 @@ def train_model(dataset: pd.DataFrame, output_dir: Path, seed: int = 20260723) -
     temperature = temperature_scale(
         validation_probability, validation["action_id"].map(class_to_index).to_numpy()
     )
+    formal_validation = validation[validation["evidence_tier"].eq("gold")]
+    formal_test = test[test["evidence_tier"].eq("gold")]
+    formal_evaluation = not formal_validation.empty and not formal_test.empty
     metrics = {}
-    for name, part in (("validation", validation), ("test", test)):
+    evaluation_parts = (
+        ("validation", formal_validation if formal_evaluation else validation),
+        ("test", formal_test if formal_evaluation else test),
+    )
+    for name, part in evaluation_parts:
         known = part["action_id"].isin(classes)
         actual = part.loc[known, "action_id"].map(class_to_index).to_numpy()
         probability = apply_temperature(model.predict_proba(part.loc[known, features]), temperature)
@@ -450,7 +504,8 @@ def train_model(dataset: pd.DataFrame, output_dir: Path, seed: int = 20260723) -
         metrics[name]["subjects"] = sorted(part.loc[known, "subject_id"].unique().tolist())
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    target_test_support = test["action_id"].value_counts()
+    evaluated_test = formal_test if formal_evaluation else test
+    target_test_support = evaluated_test["action_id"].value_counts()
     subject_coverage = (
         dataset.groupby("action_id")["subject_id"].nunique().astype(int).to_dict()
     )
@@ -461,13 +516,22 @@ def train_model(dataset: pd.DataFrame, output_dir: Path, seed: int = 20260723) -
         action for action in classes if motion_state_for_activity(action) == "motion"
     ]
     demo_ready = (
+        formal_evaluation
+        and
         metrics["validation"]["motion"]["macro_f1"] >= 0.90
         and metrics["test"]["motion"]["macro_f1"] >= 0.90
+        and metrics["test"]["motion"]["recall_exercise"] >= 0.90
+        and metrics["test"]["motion"]["specificity_non_exercise"] >= 0.90
         and metrics["test"]["macro_f1"] >= 0.80
+        and all(
+            float(metrics["test"]["classification_report"].get(action, {}).get("recall", 0))
+            >= 0.70
+            for action in classes
+        )
         and all(int(target_test_support.get(action, 0)) > 0 for action in classes)
     )
     payload = {
-        "format_version": 2,
+        "format_version": 3,
         "model_family": "lightgbm_multiclass",
         "model": model,
         "features": features,
@@ -484,6 +548,10 @@ def train_model(dataset: pd.DataFrame, output_dir: Path, seed: int = 20260723) -
         "action_threshold": 0.65,
         "unknown_threshold": 0.50,
         "demo_ready": demo_ready,
+        "experimental": not demo_ready,
+        "formal_evaluation": formal_evaluation,
+        "evidence_tiers": sorted(set(dataset["evidence_tier"].astype(str))),
+        "feature_version": "activity-window-v2",
     }
     with (output_dir / "activity_model.pkl").open("wb") as handle:
         pickle.dump(payload, handle)
@@ -498,9 +566,15 @@ def train_model(dataset: pd.DataFrame, output_dir: Path, seed: int = 20260723) -
         "temperature": temperature,
         "best_iteration": int(model.best_iteration_ or model.n_estimators),
         "demo_ready": demo_ready,
+        "formal_evaluation": formal_evaluation,
+        "experimental": not demo_ready,
+        "evidence_tiers": payload["evidence_tiers"],
         "acceptance_thresholds": {
             "motion_macro_f1": 0.90,
+            "motion_recall": 0.90,
+            "non_motion_specificity": 0.90,
             "action_macro_f1": 0.80,
+            "per_action_recall": 0.70,
             "all_model_classes_present_in_test": True,
         },
         "subject_coverage_by_class": subject_coverage,
@@ -513,6 +587,34 @@ def train_model(dataset: pd.DataFrame, output_dir: Path, seed: int = 20260723) -
         "split_counts": dataset.groupby(["split", "action_id"]).size().unstack(fill_value=0).to_dict(orient="index"),
     }
     (output_dir / "metrics.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    bundle_manifest = {
+        "schema_version": "1.0",
+        "model_kind": "activity",
+        "model_family": payload["model_family"],
+        "dataset_version": (
+            f"{taxonomy_version()}-{len(dataset)}w-"
+            f"{dataset['subject_id'].nunique()}s"
+        ),
+        "feature_version": payload["feature_version"],
+        "label_schema_version": SCHEMA_VERSION,
+        "taxonomy_version": taxonomy_version(),
+        "sample_rate_hz": TARGET_RATE_HZ,
+        "window_seconds": WINDOW_SECONDS,
+        "hop_seconds": HOP_SECONDS,
+        "classes": classes,
+        "metrics": {
+            "formal_evaluation": formal_evaluation,
+            "demo_ready": demo_ready,
+            "validation": metrics["validation"],
+            "test": metrics["test"],
+        },
+        "code_version": "opensport-imu-0.1.0",
+        "experimental": not demo_ready,
+    }
+    (output_dir / "model_bundle.json").write_text(
+        json.dumps(bundle_manifest, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
     test_counts = report["split_counts"]["test"]
     missing_test = [action for action in classes if int(test_counts.get(action, 0)) == 0]
     model_card = f"""# IMU Demo 动作模型卡
@@ -553,6 +655,14 @@ def main() -> None:
     parser.add_argument("--output-dir", type=Path, default=Path("imu_output/demo_activity"))
     parser.add_argument("--features-csv", type=Path)
     parser.add_argument("--max-windows-per-capture", type=int, default=300)
+    parser.add_argument(
+        "--allow-legacy-training",
+        action="store_true",
+        help=(
+            "Allow legacy_reviewed windows for an explicitly experimental model. "
+            "They never satisfy the formal acceptance gate."
+        ),
+    )
     args = parser.parse_args()
     args.output_dir.mkdir(parents=True, exist_ok=True)
     if args.features_csv and args.features_csv.exists():
@@ -560,7 +670,7 @@ def main() -> None:
         manifest = pd.DataFrame()
         required_cache = {
             "label_schema_version", "taxonomy_version", "exact_activity_id",
-            "motion_state", "wear_state",
+            "motion_state", "wear_state", "evidence_tier",
         }
         if missing := required_cache - set(dataset.columns):
             raise SystemExit(
@@ -572,7 +682,10 @@ def main() -> None:
             raise SystemExit("Feature cache taxonomy version is stale")
     else:
         dataset, manifest = build_feature_dataset(
-            args.data_dir, args.timeline, max_windows_per_capture=args.max_windows_per_capture
+            args.data_dir,
+            args.timeline,
+            max_windows_per_capture=args.max_windows_per_capture,
+            allow_legacy_training=args.allow_legacy_training,
         )
         dataset.to_csv(args.output_dir / "window_features.csv", index=False, encoding="utf-8-sig")
         manifest.to_csv(args.output_dir / "data_manifest.csv", index=False, encoding="utf-8-sig")

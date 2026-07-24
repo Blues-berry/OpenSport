@@ -16,10 +16,11 @@ async function refreshLiveData() {
     const stream = live.streams?.[0];
     if (!stream) return;
     statusTitle.textContent = `${stream.device} 实时连接中`;
-    statusDetail.textContent = `${stream.label} · 运动置信度 ${stream.exercise_probability}% · ${stream.workout_state || '等待'}`;
-    postureState.textContent = stream.workout_state === 'active_set' ? '运动中' : '当前姿态监测中';
+    const warning = stream.experimental ? ` · ${stream.warning || '实验模型'}` : '';
+    statusDetail.textContent = `${stream.label} · 运动置信度 ${stream.exercise_probability}% · ${stream.workout_state || '等待'}${warning}`;
+    postureState.textContent = stream.workout_state === 'active' ? '运动中' : '当前姿态监测中';
     postureAngle.textContent = `信号质量 ${stream.signal_quality || '等待'} · 来自 ${stream.device}`;
-    postureDetail.textContent = `实时数据已更新 · 最近样本 ${stream.last_sample_age_s} 秒前`;
+    postureDetail.textContent = `实时数据已更新 · 最近样本 ${stream.last_sample_age_s} 秒前${stream.posture?.experimental ? ` · ${stream.posture.warning || '实验姿态模型'}` : ''}`;
   } catch (_) { /* Offline upload continues to work when no receiver is running. */ }
 }
 
@@ -33,7 +34,7 @@ function formatDuration(seconds) {
 }
 
 function activityText(activity) {
-  if (activity.kind === 'cardio') return `${activity.action} ${formatDuration(activity.duration_seconds)}`;
+  if (activity.kind !== 'strength') return `${activity.action} ${formatDuration(activity.duration_seconds)}`;
   return `${activity.action} ${activity.sets} 组`;
 }
 
@@ -88,7 +89,7 @@ input.addEventListener('change', async () => {
     duration.textContent = formatDuration(result.exercise_duration_seconds);
     summary.textContent = `${result.session_count} 段训练 · ${result.windows} 个窗口已自动整理`;
     statusTitle.textContent = result.status;
-    statusDetail.textContent = `平均运动置信度 ${result.exercise_probability}% · ${result.filename}`;
+    statusDetail.textContent = `平均运动置信度 ${result.exercise_probability}% · ${result.filename}${result.experimental ? ` · ${result.warning || '实验模型'}` : ''}`;
     renderSessions(result.sessions);
     postureState.textContent = result.posture.state;
     postureAngle.textContent = result.posture.angle_degrees === null ? '未读取到姿态角' : `姿态角 ${result.posture.angle_degrees}° · 运动置信度 ${result.exercise_probability}%`;

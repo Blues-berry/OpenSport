@@ -23,7 +23,7 @@ class LegacyDecoder:
     def __init__(self):
         self.buffer = bytearray()
 
-    def feed(self, data: bytes) -> list[tuple[float, float, float, float, float, float]]:
+    def feed(self, data: bytes) -> list[dict]:
         self.buffer.extend(data)
         output = []
         while True:
@@ -37,16 +37,22 @@ class LegacyDecoder:
                 break
             frame = bytes(self.buffer[:LEGACY_FRAME_SIZE])
             del self.buffer[:LEGACY_FRAME_SIZE]
-            ax, ay, az, gx, gy, gz, _, _, _ = struct.unpack("<9h", frame[2:])
+            ax, ay, az, gx, gy, gz, roll, pitch, yaw = struct.unpack(
+                "<9h", frame[2:]
+            )
             output.append(
-                (
-                    ax * 16.0 / 32768.0,
-                    ay * 16.0 / 32768.0,
-                    az * 16.0 / 32768.0,
-                    gx * 2000.0 / 32768.0,
-                    gy * 2000.0 / 32768.0,
-                    gz * 2000.0 / 32768.0,
-                )
+                {
+                    "ax_g": ax * 16.0 / 32768.0,
+                    "ay_g": ay * 16.0 / 32768.0,
+                    "az_g": az * 16.0 / 32768.0,
+                    "gx_dps": gx * 2000.0 / 32768.0,
+                    "gy_dps": gy * 2000.0 / 32768.0,
+                    "gz_dps": gz * 2000.0 / 32768.0,
+                    "roll_deg": roll * 180.0 / 32768.0,
+                    "pitch_deg": pitch * 180.0 / 32768.0,
+                    "yaw_deg": yaw * 180.0 / 32768.0,
+                    "orientation_source": "hardware_euler",
+                }
             )
         return output
 
@@ -105,12 +111,7 @@ async def run_device(args: argparse.Namespace) -> None:
                                 {
                                     "timestamp": timestamp,
                                     "sequence_id": legacy_sequence,
-                                    "ax_g": axes[0],
-                                    "ay_g": axes[1],
-                                    "az_g": axes[2],
-                                    "gx_dps": axes[3],
-                                    "gy_dps": axes[4],
-                                    "gz_dps": axes[5],
+                                    **axes,
                                 }
                             )
                             legacy_sequence = (legacy_sequence + 1) & 0xFFFF

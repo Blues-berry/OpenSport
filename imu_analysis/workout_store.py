@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import sqlite3
 import time
 from datetime import datetime
@@ -32,6 +33,7 @@ CREATE TABLE IF NOT EXISTS activity_segments (
 );
 CREATE TABLE IF NOT EXISTS strategy_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id TEXT UNIQUE,
     session_id TEXT,
     timestamp REAL NOT NULL,
     event_type TEXT NOT NULL,
@@ -54,6 +56,20 @@ class WorkoutStore:
             self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as connection:
             connection.executescript(SCHEMA)
+            columns = {
+                row["name"]
+                for row in connection.execute(
+                    "PRAGMA table_info(strategy_events)"
+                ).fetchall()
+            }
+            if "event_id" not in columns:
+                connection.execute(
+                    "ALTER TABLE strategy_events ADD COLUMN event_id TEXT"
+                )
+            connection.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS "
+                "idx_strategy_event_id ON strategy_events(event_id)"
+            )
 
     def _connect(self) -> sqlite3.Connection:
         if self._memory_connection is not None:
@@ -67,22 +83,48 @@ class WorkoutStore:
             return
         with self._connect() as connection:
             for event in events:
+                event_json = json.dumps(
+                    event, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+                )
+                event_id = str(event.get("event_id") or hashlib.sha256(
+                    event_json.encode("utf-8")
+                ).hexdigest())
+                before = connection.total_changes
                 connection.execute(
-                    "INSERT INTO strategy_events(session_id,timestamp,event_type,payload_json) VALUES(?,?,?,?)",
+                    """
+                    INSERT OR IGNORE INTO strategy_events(
+                        event_id,session_id,timestamp,event_type,payload_json
+                    ) VALUES(?,?,?,?,?)
+                    """,
                     (
+                        event_id,
                         event.get("session_id"),
                         float(event["timestamp"]),
                         event["type"],
-                        json.dumps(event, ensure_ascii=False),
+                        event_json,
                     ),
                 )
+                if connection.total_changes == before:
+                    continue
                 if event["type"] == "workout_started":
                     connection.execute(
                         "INSERT OR IGNORE INTO sessions(session_id,start_timestamp) VALUES(?,?)",
                         (event["session_id"], float(event["timestamp"])),
                     )
-                elif event["type"] in {"set_ended", "cardio_ended"}:
-                    kind = "cardio" if event["action"] in CARDIO_ACTIONS else "strength"
+                elif event["type"] in {
+                    "set_ended",
+                    "cardio_ended",
+                    "activity_ended",
+                }:
+                    kind = (
+                        "cardio"
+                        if event["action"] in CARDIO_ACTIONS
+                        else (
+                            "strength"
+                            if event["type"] == "set_ended"
+                            else "other"
+                        )
+                    )
                     connection.execute(
                         """
                         INSERT INTO activity_segments(
@@ -94,7 +136,7 @@ class WorkoutStore:
                             event["action"],
                             kind,
                             float(event["start_timestamp"]),
-                            float(event["timestamp"]),
+                            float(event.get("end_timestamp", event["timestamp"])),
                             float(event["duration_seconds"]),
                             float(event["confidence"]),
                         ),
@@ -103,7 +145,11 @@ class WorkoutStore:
                     connection.execute(
                         "UPDATE sessions SET end_timestamp=?,active_seconds=?,set_count=? WHERE session_id=?",
                         (
-                            float(event["timestamp"]),
+                            float(
+                                event.get(
+                                    "end_timestamp", event["timestamp"]
+                                )
+                            ),
                             float(event["active_seconds"]),
                             int(event["sets"]),
                             event["session_id"],
@@ -144,12 +190,14 @@ class WorkoutStore:
                             "action_id": action,
                             "action": ACTION_NAMES_ZH.get(action, action),
                             "kind": segment["kind"],
-                            "sets": 0 if segment["kind"] == "cardio" else 1,
+                            "sets": (
+                                1 if segment["kind"] == "strength" else 0
+                            ),
                             "duration_seconds": 0,
                             "start": datetime.fromtimestamp(segment["start_timestamp"]).strftime("%H:%M"),
                         }
                         activities.append(item)
-                    if segment["kind"] == "cardio":
+                    if segment["kind"] in {"cardio", "other"}:
                         item["duration_seconds"] += round(float(segment["duration_seconds"]))
                     elif item is activities[-1] and item["sets"] and item.get("_last_id") is not None:
                         item["sets"] += 1

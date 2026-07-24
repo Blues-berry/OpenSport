@@ -27,16 +27,38 @@ from workout_store import WorkoutStore
 
 
 HERE = Path(__file__).resolve().parent
+PROJECT_ROOT = HERE.parent
+SRC_ROOT = PROJECT_ROOT / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
+
+from opensport.models.registry import ModelRegistry  # noqa: E402
+
 WEB_ROOT = HERE / "web"
-MODEL_PATH = HERE.parent / "imu_output" / "headphone_all" / "model" / "l2_logistic_model.pkl"
-CHAMPION_ACTIVITY_MODEL_PATH = HERE.parent / "imu_output" / "activity_registry" / "champion" / "activity_model.pkl"
-CANDIDATE_ACTIVITY_MODEL_PATH = HERE.parent / "imu_output" / "demo_activity" / "model" / "activity_model.pkl"
-HEAD_POSTURE_MODEL_PATH = HERE.parent / "imu_output" / "head_posture" / "model" / "head_posture_model.pkl"
-ACTIVITY_MODEL_PATH = (
-    CHAMPION_ACTIVITY_MODEL_PATH
-    if CHAMPION_ACTIVITY_MODEL_PATH.exists()
-    else CANDIDATE_ACTIVITY_MODEL_PATH
-)
+MODEL_PATH = PROJECT_ROOT / "imu_output" / "headphone_all" / "model" / "l2_logistic_model.pkl"
+MODEL_REGISTRY = ModelRegistry(PROJECT_ROOT / "imu_output" / "models")
+
+
+def resolve_model_path(kind: str) -> Path | None:
+    registered = MODEL_REGISTRY.resolve(kind)
+    if registered:
+        return registered.path
+    fallbacks = (
+        (
+            PROJECT_ROOT / "imu_output" / "activity_registry" / "champion" / "activity_model.pkl",
+            PROJECT_ROOT / "imu_output" / "activity_multiclass_20260724" / "model" / "activity_model.pkl",
+            PROJECT_ROOT / "imu_output" / "demo_activity" / "model" / "activity_model.pkl",
+        )
+        if kind == "activity"
+        else (
+            PROJECT_ROOT / "imu_output" / "head_posture" / "model" / "head_posture_model.pkl",
+        )
+    )
+    return next((path for path in fallbacks if path.exists()), None)
+
+
+ACTIVITY_MODEL_PATH = resolve_model_path("activity")
+HEAD_POSTURE_MODEL_PATH = resolve_model_path("posture")
 LIVE_CSV_PATH = HERE.parent / "imu_output" / "live_imu.csv"
 LIVE_STATUS_PATH = HERE.parent / "imu_output" / "live_status.json"
 ACTIVITY_STATUS_PATH = HERE.parent / "imu_output" / "activity_live_status.json"
@@ -55,10 +77,10 @@ def receiver_control(action: str | None = None) -> dict:
         if action == "start" and not running:
             if not RECEIVER_SCRIPT.exists():
                 raise FileNotFoundError(f"BLE receiver not found: {RECEIVER_SCRIPT}")
-            if not ACTIVITY_MODEL_PATH.exists():
-                raise FileNotFoundError(f"请先训练动作模型：{ACTIVITY_MODEL_PATH}")
-            if not HEAD_POSTURE_MODEL_PATH.exists():
-                raise FileNotFoundError(f"请先训练头部姿态模型：{HEAD_POSTURE_MODEL_PATH}")
+            if ACTIVITY_MODEL_PATH is None:
+                raise FileNotFoundError("未注册可用的动作模型")
+            if HEAD_POSTURE_MODEL_PATH is None:
+                raise FileNotFoundError("未注册可用的头部姿态模型")
             address = "F6:B1:93:B5:2B:23"
             RECEIVER_PROCESS = subprocess.Popen(
                 [
@@ -100,7 +122,14 @@ def load_model() -> dict:
         return pickle.load(handle)
 
 
-MODEL = load_model()
+MODEL: dict | None = None
+
+
+def legacy_model() -> dict:
+    global MODEL
+    if MODEL is None:
+        MODEL = load_model()
+    return MODEL
 
 
 def merged_duration(intervals: list[tuple[float, float]]) -> float:
@@ -124,7 +153,7 @@ def analyze_upload(filename: str, content: str) -> dict:
     with tempfile.NamedTemporaryFile("w", suffix=suffix, encoding="utf-8-sig", delete=False) as temp:
         temp.write(content)
         source = Path(temp.name)
-    if ACTIVITY_MODEL_PATH.exists():
+    if ACTIVITY_MODEL_PATH is not None and ACTIVITY_MODEL_PATH.exists():
         try:
             result = analyze_temporary(source, ACTIVITY_MODEL_PATH)
             last = result.get("last_inference") or {}
@@ -135,6 +164,8 @@ def analyze_upload(filename: str, content: str) -> dict:
                 "exercise_probability": round(float(last.get("motion_probability", 0)) * 100),
                 "exercise_duration_seconds": int(result.get("total_workout_seconds", 0)),
                 "status": "已检测到训练" if sessions else "本次未检测到训练",
+                "experimental": bool(last.get("experimental", True)),
+                "warning": last.get("warning"),
                 "posture": {
                     "state": "运动分析已完成",
                     "detail": "动作模型使用六轴 IMU；静态姿态评价由独立功能处理",
@@ -152,9 +183,12 @@ def analyze_upload(filename: str, content: str) -> dict:
         raise ValueError("文件时长不足，无法生成 2 秒分析窗口")
 
     windows = pd.DataFrame(rows)
-    feature_names = MODEL["features"]
-    probabilities = predict_probability(MODEL["model"], windows.reindex(columns=feature_names))
-    threshold = float(MODEL["threshold"])
+    model_payload = legacy_model()
+    feature_names = model_payload["features"]
+    probabilities = predict_probability(
+        model_payload["model"], windows.reindex(columns=feature_names)
+    )
+    threshold = float(model_payload["threshold"])
     windows["probability"] = probabilities
     windows["is_exercise"] = probabilities >= threshold
 
@@ -232,6 +266,8 @@ def live_payload() -> dict:
                         "workout_state": strategy.get("state", "idle"),
                         "sets": int(strategy.get("sets_in_session", 0)),
                         "signal_quality": result.get("signal_quality", "waiting"),
+                        "experimental": bool(result.get("experimental", True)),
+                        "warning": result.get("warning"),
                         "gyro_x_dps": round(float(sample.get("gx_dps") or 0), 1),
                         "gyro_y_dps": round(float(sample.get("gy_dps") or 0), 1),
                         "gyro_z_dps": round(float(sample.get("gz_dps") or 0), 1),
@@ -355,6 +391,20 @@ class AppHandler(SimpleHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         path = urlparse(self.path).path
+        if path == "/api/models":
+            payload = MODEL_REGISTRY.status()
+            payload["legacy_activity_fallback"] = {
+                "available": ACTIVITY_MODEL_PATH is not None,
+                "path": str(ACTIVITY_MODEL_PATH) if ACTIVITY_MODEL_PATH else None,
+            }
+            body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if path == "/api/control":
             body = json.dumps(receiver_control(), ensure_ascii=False).encode("utf-8")
             self.send_response(HTTPStatus.OK)

@@ -1,8 +1,6 @@
-subject_id,session_id,posture,start_s,end_s,target_angle_deg,context,held_seconds,device_id,wearing_side,notes
-示例受试者,session-001,normal,0,20,0,seated,20,,,自然坐直并保持
-示例受试者,session-001,head_down,25,45,30,seated,20,,,只低头不弯腰
-示例受试者,session-001,head_up,50,70,25,seated,20,,,保持躯干不动
-示例受试者,session-001,head_tilt_left,75,95,25,seated,20,,,左耳靠近左肩
-示例受试者,session-001,head_tilt_right,100,120,25,seated,20,,,右耳靠近右肩
-示例受试者,session-001,head_turn_left,125,145,35,seated,20,,,下巴转向左侧
-示例受试者,session-001,head_turn_right,150,170,35,seated,20,,,下巴转向右侧
+source_file,subject_id,session_id,trial_id,start_s,end_s,posture_state,deviations,target_angle_deg,context,reference_source,confidence,window_trainable,notes
+0725-S001-T0101.csv,S001,session-001,T0101,0,20,normal,,0,seated,operator_event,high,true,个人自然中立位
+0725-S001-T0102.csv,S001,session-001,T0102,3,23,poor,head_down,30,seated,video_review,high,true,只低头不弯腰
+0725-S001-T0103.csv,S001,session-001,T0103,3,23,poor,head_up,25,standing,video_review,high,true,坐站只作上下文
+0725-S001-T0104.csv,S001,session-001,T0104,3,23,poor,head_tilt_left,25,seated,video_review,high,true,左耳靠近左肩
+0725-S001-T0105.csv,S001,session-001,T0105,3,23,poor,head_turn_right,35,seated,video_review,high,true,下巴转向右侧

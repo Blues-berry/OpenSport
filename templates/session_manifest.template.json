@@ -1,0 +1,46 @@
+{
+  "schema_version": "1.0",
+  "protocol_version": "imu-collection-v1.0",
+  "date": "2026-07-25",
+  "session_id": "session-20260725-001",
+  "subject_id": "S001",
+  "collector_id": "C001",
+  "app_version": "1.0.0",
+  "trials": [
+    {
+      "trial_id": "T0001",
+      "label_file": "S001/T0001/0725-S001-T0001.labels.json",
+      "replaces_trial_id": null,
+      "streams": [
+        {
+          "device_id": "D01",
+          "ear_side": "left",
+          "csv_file": "S001/T0001/0725-S001-T0001-D01-left.csv",
+          "sha256": "REPLACE_WITH_64_HEX_CHARACTERS",
+          "sample_rate_configured_hz": 50,
+          "acceleration_unit": "g",
+          "angular_velocity_unit": "deg/s",
+          "acceleration_range": 16,
+          "angular_velocity_range": 2000,
+          "filter_config": "REPLACE_WITH_FILTER_CONFIGURATION",
+          "firmware_version": "REPLACE_WITH_FIRMWARE_VERSION",
+          "axis_sign": [1, 1, 1]
+        },
+        {
+          "device_id": "D02",
+          "ear_side": "right",
+          "csv_file": "S001/T0001/0725-S001-T0001-D02-right.csv",
+          "sha256": "REPLACE_WITH_64_HEX_CHARACTERS",
+          "sample_rate_configured_hz": 50,
+          "acceleration_unit": "g",
+          "angular_velocity_unit": "deg/s",
+          "acceleration_range": 16,
+          "angular_velocity_range": 2000,
+          "filter_config": "REPLACE_WITH_FILTER_CONFIGURATION",
+          "firmware_version": "REPLACE_WITH_FIRMWARE_VERSION",
+          "axis_sign": [1, 1, 1]
+        }
+      ]
+    }
+  ]
+}

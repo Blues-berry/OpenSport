@@ -1,0 +1,21 @@
+{
+  "schema_version": "1.0",
+  "subject_id": "S001",
+  "session_id": "session-20260725-001",
+  "trial_id": "T0101",
+  "evidence_tier": "gold",
+  "segments": [
+    {
+      "start_s": 3.0,
+      "end_s": 23.0,
+      "posture_state": "poor",
+      "deviations": ["head_down"],
+      "target_angle_deg": 30,
+      "context": "seated",
+      "reference_source": "video_review",
+      "confidence": "high",
+      "window_trainable": true,
+      "review_note": "躯干保持中立"
+    }
+  ]
+}

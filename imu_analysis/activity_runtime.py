@@ -9,7 +9,13 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from activity_features import SENSOR_KEYS, extract_window_features, signal_quality
+from activity_features import (
+    SENSOR_KEYS,
+    extract_window_features,
+    interpolate_to_grid,
+    signal_quality,
+)
+from activity_taxonomy import CARDIO_ACTIONS, STRENGTH_ACTIONS
 from workout_store import WorkoutStore
 from workout_strategy import WorkoutStrategy
 
@@ -28,6 +34,11 @@ class StreamingActivityClassifier:
             self.payload = pickle.load(handle)
         if self.payload.get("model_family") != "lightgbm_multiclass":
             raise ValueError("Expected a lightgbm_multiclass activity model")
+        if (
+            int(self.payload.get("format_version", 1)) >= 3
+            and self.payload.get("feature_version") != "activity-window-v2"
+        ):
+            raise ValueError("Incompatible activity feature_version")
         self.model = self.payload["model"]
         self.features = self.payload["features"]
         self.classes = self.payload["classes"]
@@ -38,6 +49,12 @@ class StreamingActivityClassifier:
         self.window_seconds = float(self.payload["window_seconds"])
         self.hop_seconds = float(self.payload["hop_seconds"])
         self.temperature = float(self.payload.get("temperature", 1.0))
+        self.experimental = bool(
+            self.payload.get("experimental", not self.payload.get("demo_ready", False))
+        ) or int(self.payload.get("format_version", 1)) < 3
+        self.warning = (
+            "实验模型/低于正式验收标准" if self.experimental else None
+        )
         self.samples: deque[dict] = deque()
         self.last_inference = -float("inf")
         self.last_sequence: int | None = None
@@ -52,7 +69,7 @@ class StreamingActivityClassifier:
             now + 0.5 / self.sample_rate_hz,
             1.0 / self.sample_rate_hz,
         )
-        return np.column_stack([np.interp(target, timestamps, values[:, index]) for index in range(6)])
+        return interpolate_to_grid(timestamps, values, target)
 
     def update(self, sample: dict) -> dict | None:
         now = float(sample["timestamp"])
@@ -88,7 +105,13 @@ class StreamingActivityClassifier:
         if action_probability < float(self.payload.get("action_threshold", 0.65)):
             action = "other_motion" if motion_probability >= 0.5 else "other_non_motion"
         wear_state = "invalid" if quality.state == "poor" else "valid"
+        family = (
+            "cardio"
+            if action in CARDIO_ACTIONS
+            else ("strength" if action in STRENGTH_ACTIONS else "other")
+        )
         return {
+            "schema_version": "1.0",
             "timestamp": now,
             "motion_probability": motion_probability,
             "motion_state": None if wear_state != "valid" else (
@@ -96,6 +119,7 @@ class StreamingActivityClassifier:
             ),
             "action": action,
             "activity_id": action,
+            "activity_family": family,
             "action_probability": action_probability,
             "wear_state": wear_state,
             "unknown_probability": (
@@ -105,6 +129,8 @@ class StreamingActivityClassifier:
             "signal_quality": quality.state,
             "sequence_gaps": self.sequence_gaps,
             "probabilities": probabilities,
+            "experimental": self.experimental,
+            "warning": self.warning,
         }
 
 
@@ -130,11 +156,42 @@ class RuntimeCoordinator:
         )
         if self.store:
             self.store.apply_events(events)
-        self.last_result = {**inference, "strategy": snapshot.to_dict(), "events": events}
+        strategy = snapshot.to_dict()
+        workout_ended = next(
+            (event for event in reversed(events) if event["type"] == "workout_ended"),
+            None,
+        )
+        strategy["finalized"] = bool(workout_ended)
+        self.last_result = {
+            **inference,
+            "exercise_state": strategy.get("exercise_state", "not_exercising"),
+            "workout_phase": strategy.get("state", "idle"),
+            "set_count": int(strategy.get("sets_in_session", 0)),
+            "session_id": strategy.get("session_id"),
+            "finalized": bool(workout_ended),
+            "strategy": strategy,
+            "events": events,
+        }
         return self.last_result
 
     def flush(self, timestamp: float) -> list[dict]:
-        _, events = self.strategy.flush(timestamp)
+        snapshot, events = self.strategy.flush(timestamp)
         if self.store:
             self.store.apply_events(events)
+        if self.last_result is not None:
+            ended = any(
+                event["type"] == "workout_ended" for event in events
+            )
+            strategy = snapshot.to_dict()
+            strategy["finalized"] = ended
+            self.last_result = {
+                **self.last_result,
+                "exercise_state": snapshot.exercise_state,
+                "workout_phase": snapshot.state,
+                "set_count": snapshot.sets_in_session,
+                "session_id": snapshot.session_id,
+                "finalized": ended,
+                "strategy": strategy,
+                "events": events,
+            }
         return events

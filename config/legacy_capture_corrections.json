@@ -1,0 +1,23 @@
+{
+  "schema_version": "1.0",
+  "participant_device_order": {
+    "first": "WT901BLE11",
+    "second": "WT22222"
+  },
+  "capture_overrides": {
+    "0722/李浩宇+车学远-/14-48-44-727": {
+      "activity_id": "head_up",
+      "decision": "accepted_legacy",
+      "reason": "现场确认该无动作名片段实际为抬头"
+    },
+    "0721/毛泽凯+车学远-坐姿/14-56-19-426": {
+      "decision": "rejected",
+      "reason": "第一段约6秒，为错误采集"
+    },
+    "0721/毛泽凯+车学远-坐姿/15-02-39-129": {
+      "activity_id": "sitting",
+      "decision": "accepted_legacy",
+      "reason": "第二段为有效坐姿记录"
+    }
+  }
+}

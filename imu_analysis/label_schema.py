@@ -17,7 +17,13 @@ from typing import Any
 
 SCHEMA_VERSION = "2.0"
 SHORT_RECORDING_MAX_SECONDS = 180.0
-MIN_SUBJECTS_FOR_MODEL_CLASS = 3
+MIN_SUBJECTS_FOR_MODEL_CLASS = 5
+EVIDENCE_TIERS = frozenset(
+    {"gold", "legacy_reviewed", "session_weak", "rejected"}
+)
+GOLD_LABEL_SOURCES = frozenset(
+    {"operator_event", "video_review", "manual_timeline"}
+)
 MOTION_STATES = frozenset({"motion", "non_motion"})
 WEAR_STATES = frozenset({"valid", "removed", "asymmetric", "invalid"})
 PHASES = frozenset({"active", "rest", "transition", "artifact"})
@@ -377,6 +383,24 @@ def validate_v2_document(document: dict[str, Any]) -> list[str]:
     errors: list[str] = []
     if document.get("schema_version") != SCHEMA_VERSION:
         errors.append("schema_version must be 2.0")
+    required = {
+        "taxonomy_version",
+        "date",
+        "participant",
+        "device",
+        "csv_file",
+        "annotation_scope",
+        "recording",
+        "window_trainable",
+        "annotation_quality",
+        "evidence_tier",
+        "segments",
+    }
+    if missing := sorted(required - document.keys()):
+        errors.append(f"missing required fields: {missing}")
+    evidence_tier = document.get("evidence_tier")
+    if evidence_tier not in EVIDENCE_TIERS:
+        errors.append("evidence_tier is invalid")
     duration = float(document.get("recording", {}).get("duration_seconds", -1))
     annotation_scope = document.get("annotation_scope")
     if duration > SHORT_RECORDING_MAX_SECONDS and annotation_scope != "session_weak":
@@ -386,11 +410,21 @@ def validate_v2_document(document: dict[str, Any]) -> list[str]:
             errors.append("session_weak must not contain supervised segments")
         if document.get("window_trainable") is not False:
             errors.append("session_weak must set window_trainable=false")
+    previous_end = 0.0
     for index, segment in enumerate(document.get("segments", [])):
         prefix = f"segments[{index}]"
         activity_id = segment.get("activity_id")
         motion_state = segment.get("motion_state")
         wear_state = segment.get("wear_state")
+        start_s = float(segment.get("start_s", -1))
+        end_s = float(segment.get("end_s", -1))
+        if start_s < previous_end:
+            errors.append(f"{prefix} overlaps or is out of order")
+        if start_s < 0 or end_s <= start_s or (
+            duration >= 0 and end_s > duration + 1e-3
+        ):
+            errors.append(f"{prefix} has invalid bounds")
+        previous_end = max(previous_end, end_s)
         if activity_id not in ACTIVITIES:
             errors.append(f"{prefix}.activity_id is unknown: {activity_id}")
         if motion_state is not None and motion_state not in MOTION_STATES:
@@ -399,8 +433,15 @@ def validate_v2_document(document: dict[str, Any]) -> list[str]:
             errors.append(f"{prefix}.wear_state is invalid")
         if wear_state != "valid" and segment.get("window_trainable"):
             errors.append(f"{prefix} invalid wear cannot be window_trainable")
+        if wear_state != "valid" and motion_state is not None:
+            errors.append(f"{prefix} invalid wear must set motion_state=null")
         if segment.get("phase") not in PHASES:
             errors.append(f"{prefix}.phase is invalid")
+        if evidence_tier == "gold" and segment.get("window_trainable"):
+            if segment.get("label_source") not in GOLD_LABEL_SOURCES:
+                errors.append(f"{prefix} gold label source is not accepted")
+            if segment.get("confidence") not in {"high", "medium"}:
+                errors.append(f"{prefix} gold label confidence is too low")
     return errors
 
 
@@ -429,6 +470,7 @@ def convert_legacy_document(payload: dict[str, Any], path: Path) -> dict[str, An
         return {
             **payload,
             "schema_version": SCHEMA_VERSION,
+            "evidence_tier": "session_weak",
             "annotation_scope": "session_weak",
             "window_trainable": False,
             "recording": {**recording, "duration_seconds": duration},
@@ -441,6 +483,7 @@ def convert_legacy_document(payload: dict[str, Any], path: Path) -> dict[str, An
         return {
             **payload,
             "schema_version": SCHEMA_VERSION,
+            "evidence_tier": "rejected",
             "annotation_scope": "review_required",
             "window_trainable": False,
             "recording": {**recording, "duration_seconds": duration},
@@ -456,6 +499,7 @@ def convert_legacy_document(payload: dict[str, Any], path: Path) -> dict[str, An
     return {
         **payload,
         "schema_version": SCHEMA_VERSION,
+        "evidence_tier": "legacy_reviewed",
         "annotation_scope": "full_recording",
         "window_trainable": reviewed["window_trainable"],
         "recording": {**recording, "duration_seconds": duration},

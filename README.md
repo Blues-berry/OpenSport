@@ -10,16 +10,18 @@ and live captures live under `imu_output/`.
 ## Included tools
 
 - `realtime_ble_imu.py`: reads WitMotion BLE IMU notifications and can write a live CSV stream.
-- `imu_analysis/`: checks recordings, cleans samples, extracts window features, and trains a small L2-regularized logistic-regression baseline.
+- `src/opensport/`: versioned data, model, runtime, storage, device and API contracts.
+- `imu_analysis/`: backward-compatible training, replay and live entry points.
 - [采集执行与标注规范](docs/IMU_DATA_COLLECTION_AND_LABELING_STANDARD.md)：采集方式、文件命名、Schema v2 标注、长会话弱标签和交付验收的强制标准。
-- [采集与标注完整示例](docs/IMU_COLLECTION_LABELING_EXAMPLE.md)：以一次跑步机走路短试次说明原始数据、现场事件和正确双层标签。
+- [实现架构](docs/ARCHITECTURE.md)：严格导入、双模型、状态机和模型注册关系。
 - `采集计划.md` and `IMU数据采集计划_修订标红版.docx`: data-collection plans.
 - `build_collection_plan_docx.py`: rebuilds the collection-plan document.
 
 ## Setup
 
 ```powershell
-python -m pip install numpy pandas bleak pyserial
+python -m pip install -e .
+python -m pip install lightgbm scikit-learn bleak pyserial pytest
 ```
 
 ## Run the analysis pipeline
@@ -161,7 +163,7 @@ python `
 
 ### Demo 多动作模型
 
-新链路采用 50 Hz 六轴输入、4 秒窗口、0.5 秒步长的 LightGBM 多分类模型。一个模型同时输出具体 `activity_id`，并把所有 `motion` 类别的概率相加得到 `motion_probability`；组内、组间、训练段和每日汇总由独立状态机处理。
+新链路采用 50 Hz 六轴输入、4 秒因果窗口、1 秒步长的 LightGBM 多分类模型。一个模型同时输出具体 `activity_id`，并把所有 `motion` 类别的概率相加得到 `motion_probability`；组内、组间、训练段和每日汇总由独立状态机处理。
 
 安装依赖：
 
@@ -175,8 +177,11 @@ python -m pip install -r requirements.txt
 python `
   imu_analysis\train_activity_model.py `
   .\data\training\activity `
-  --output-dir imu_output\activity_multiclass
+  --output-dir imu_output\runs\activity_v1
 ```
+
+历史数据只能通过额外的 `--allow-legacy-training` 训练实验模型；即使指标
+达到数值门槛，也不会因为缺少 `gold` 正式评估而晋升冠军。
 
 训练前先生成或复核统一双层标签：
 
@@ -201,7 +206,7 @@ python scripts\build_filename_labels.py `
 
 主要产物：
 
-- `imu_output/demo_activity/model/activity_model.pkl`：Python 实时推理模型。
+- `imu_output/runs/<run>/model/activity_model.pkl`：Python 实时推理模型。
 - `activity_model.txt`：LightGBM 原生模型。
 - `metrics.json`：固定用户切分的动作与运动二分类指标，并包含 `demo_ready` 验收结果。
 - `window_features.csv`：特征缓存；原始数据未变化时可通过 `--features-csv` 加快重训。
@@ -209,20 +214,20 @@ python scripts\build_filename_labels.py `
 - `dual_label_audit.json`：逐文件双层标签和长会话弱目标审计。
 - `weak_session_targets.json`：长会话继承受试者切分后的弱验证目标；只有 validation/test 项计入正式会话指标。
 
-特征缓存包含标签 schema 与分类表版本；版本变化后旧缓存会被拒绝，必须重新提取。少于 3 名受试者的精确类别仍保留在标签中，但模型训练时合并为 `other_motion` 或 `other_non_motion`。
+特征缓存包含标签 schema、证据等级与分类表版本；版本变化后旧缓存会被拒绝。少于 5 名 `gold` 受试者的运动类别合并为 `other_motion`；活动模型的所有非运动内容统一为 `other_non_motion`，不再区分坐姿、站姿和头部方向。
 
 回放一段真实数据：
 
 ```powershell
 python `
   imu_analysis\replay_activity.py <csv路径> `
-  --model imu_output\demo_activity\model\activity_model.pkl
+  --model imu_output\models\activity\candidate\activity_model.pkl
 ```
 
 候选模型只有通过验收门槛且不低于现有冠军时才会被提升：
 
 ```powershell
-python imu_analysis\promote_activity_model.py imu_output\demo_activity\model
+python imu_analysis\promote_activity_model.py imu_output\runs\<run>\model
 ```
 
 #### 实时 BLE
@@ -244,17 +249,21 @@ python imu_analysis\realtime_activity_ble.py `
 
 当前数据训练出的首版模型会如实写入 `demo_ready`。未通过门槛时可用于链路联调，不应宣称达到 Demo 验收精度。
 
-### 坐姿头部姿态模型
+### 头部姿态模型
 
-新增的独立模型检测 `正常坐姿 / 低头 / 抬头 / 歪头 / 偏头看向一侧`，并由时序状态机记录异常姿态连续时长。它不会与运动动作模型共用标签。
+独立模型输出 `normal / poor`，并附带低头、抬头、侧倾和转头方向。
+坐姿和站姿只保留为评估上下文，不是产品类别，也不会与运动模型共用标签。
 
 训练：
 
 ```powershell
 python imu_analysis\train_head_posture_model.py `
   .\data\training\activity `
-  --output-dir imu_output\head_posture
+  --output-dir imu_output\runs\posture_v1
 ```
+
+新数据必须提供独立姿态标签。`--allow-legacy-labels` 仅用于训练明确标记的
+历史实验模型。
 
 主要产物：
 
@@ -263,10 +272,15 @@ python imu_analysis\train_head_posture_model.py `
 - `imu_output/head_posture/model/MODEL_CARD.md`：输入约束、时序规则和已知限制
 - `imu_output/head_posture/window_features_with_split.csv`：可复查的窗口与受试者切分
 
-实时使用 `StreamingHeadPostureClassifier` 前，用户需要保持自然坐姿完成 10 秒校准。相同异常稳定 3 秒后开始计时，恢复正常 2 秒后结束事件并输出本次持续秒数。实时样本需要包含加速度、角速度、姿态角和四元数。
+实时使用 `StreamingHeadPostureClassifier` 前，用户保持自然中立位完成 10 秒
+校准。不良姿态持续 30 秒触发提醒，恢复正常 5 秒后解除。优先使用经校验的
+硬件姿态；只有六轴时使用相同的相对姿态实现并把 Yaw 标记为降级。
 
 当前候选模型未通过离线验收，只能用于链路联调。现有采集对“歪头”的动作定义在不同受试者间不一致，需要按统一角度和保持时长重新补采后再训练。
 
 补采时使用 `head_posture_collection_template.csv`。每位受试者应在同一次佩戴中依次采正常、低头、抬头、左右歪头和左右转头；每个目标姿态稳定保持至少 20 秒，并记录准确起止时间。建议至少 20 位受试者，测试人员不能出现在训练集中。
 
-实时测试无需修改现有耳机六轴 BLE 协议。启动 `imu_analysis/app.py` 后打开 `http://127.0.0.1:8000/test.html`，点击“启动蓝牙采集”，切换到“坐姿”，保持自然坐姿并点击“10 秒重新校准”。页面会显示当前姿态、模型置信度和本次异常连续时间。六轴相对姿态估计、姿态模型和运动模型共享同一批实时样本。
+实时测试无需修改现有耳机六轴 BLE 协议。旧 20 字节帧中的硬件
+Roll/Pitch/Yaw 会被保留；精简六轴协议走相对姿态融合。应用在没有模型时也能
+启动，`GET /api/models` 返回 champion/candidate/missing 状态；candidate 始终
+带“实验模型/低于正式验收标准”提示。

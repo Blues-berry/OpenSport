@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://opensport.local/schemas/posture_label.schema.json",
+  "title": "OpenSport head-posture labels",
+  "type": "object",
+  "required": ["schema_version", "subject_id", "session_id", "trial_id", "evidence_tier", "segments"],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "evidence_tier": {"enum": ["gold", "legacy_reviewed", "rejected"]},
+    "segments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "start_s", "end_s", "posture_state", "deviations",
+          "reference_source", "confidence", "window_trainable"
+        ],
+        "properties": {
+          "posture_state": {"enum": ["normal", "poor"]},
+          "deviations": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "head_down", "head_up", "head_tilt_left", "head_tilt_right",
+                "head_turn_left", "head_turn_right", "forward_head_candidate"
+              ]
+            }
+          },
+          "reference_source": {
+            "enum": ["operator_event", "manual_timeline", "video_review", "trunk_imu", "motion_capture"]
+          }
+        }
+      }
+    }
+  }
+}

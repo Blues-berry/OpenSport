@@ -4,7 +4,11 @@
 
 | Path | Purpose |
 | --- | --- |
-| `imu_analysis/` | Offline cleaning, feature extraction, binary and multiclass training, replay, and strategy code |
+| `src/opensport/` | Versioned public contracts, ingestion, feature, model registry, runtime, storage, device and API layers |
+| `schemas/` | Machine-readable session, activity-label, posture-label and quality-report contracts |
+| `templates/` | Fillable JSON examples matching the acquisition contracts |
+| `config/legacy_capture_corrections.json` | Reviewed device/person and capture overrides for reproducible legacy migration |
+| `imu_analysis/` | Backward-compatible CLI/runtime wrappers and current LightGBM trainers |
 | `tests/` | Unit and contract tests |
 | `scripts/` | Dataset-label conversion and preparation utilities |
 | `assets/` | Small version-controlled UI and document assets |
@@ -19,8 +23,10 @@ These trees are intentionally excluded from Git.
 | --- | --- |
 | `data/raw/<batch>/` | Immutable source recordings grouped by collection batch |
 | `data/raw/variants/` | Same-session source variants that differ at the byte level and must be reviewed before deduplication |
-| `data/training/activity/` | Flat, filename-labelled CSV inputs for activity and posture training |
-| `imu_output/<run>/` | Versioned feature caches, reports, candidate models, and training logs |
+| `data/training/activity/<dataset_version>/` | Validated per-device captures; semantics always come from labels |
+| `data/quarantine/` | Invalid or legacy labels removed from active training inputs |
+| `imu_output/runs/<run>/` | Versioned feature caches, reports, candidate models, and training logs |
+| `imu_output/models/{activity,posture}/{candidate,champion}/` | Runtime model registry |
 | `imu_output/head_posture/` | Current head-posture candidate and its feature cache |
 | `imu_output/live_*` | Runtime captures and status files; disposable after required sessions are archived |
 
@@ -30,11 +36,16 @@ Raw data must not be edited in place. Cleaning and resampling always write to
 
 ## Model routes
 
-- `train_logistic.py` produces the deployed two-class `运动 / 非运动` baseline.
-- `train_activity_model.py` produces the LightGBM multiclass action candidate.
+- `train_logistic.py` remains a legacy two-class compatibility baseline.
+- `train_activity_model.py` produces hierarchical activity candidates. Legacy
+  evidence requires `--allow-legacy-training` and can never pass the formal gate.
 - `train_head_posture_model.py` produces the independent head-posture model.
 - Candidate models remain under a versioned `imu_output/` run until their
-  metrics are reviewed and promotion is explicitly requested.
+metrics are reviewed and promotion is explicitly requested.
+
+The live product treats each device stream independently in v1. A session
+manifest associates the left and right streams with one trial, but no model
+feature silently fuses the two ears.
 
 ## Git and push rules
 

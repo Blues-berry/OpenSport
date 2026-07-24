@@ -5,17 +5,18 @@ from __future__ import annotations
 import uuid
 from dataclasses import asdict, dataclass
 
-from activity_taxonomy import CARDIO_ACTIONS, TARGET_ACTIONS
+from activity_taxonomy import CARDIO_ACTIONS, STRENGTH_ACTIONS, TARGET_ACTIONS
 
 
 @dataclass(frozen=True)
 class StrategyConfig:
     start_threshold: float = 0.65
     continue_threshold: float = 0.45
-    start_hold_s: float = 2.0
-    end_hold_s: float = 3.0
-    minimum_set_s: float = 4.0
-    workout_timeout_s: float = 600.0
+    general_start_hold_s: float = 30.0
+    strength_start_hold_s: float = 3.0
+    end_hold_s: float = 20.0
+    minimum_set_s: float = 5.0
+    workout_timeout_s: float = 240.0
 
 
 @dataclass
@@ -27,6 +28,9 @@ class StrategySnapshot:
     action_probability: float = 0.0
     sets_in_session: int = 0
     active_seconds: float = 0.0
+    exercise_state: str = "not_exercising"
+    activity_family: str = "other"
+    finalized: bool = False
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -65,16 +69,28 @@ class WorkoutStrategy:
                     "timestamp": start,
                 }
             )
-        self.snapshot.state = "active_set"
+        self.snapshot.state = "active"
+        self.snapshot.exercise_state = "exercising"
+        self.snapshot.activity_family = (
+            "cardio" if action in CARDIO_ACTIONS
+            else ("strength" if action in STRENGTH_ACTIONS else "other")
+        )
+        self.snapshot.finalized = False
         self.snapshot.action = action
         self.snapshot.action_probability = probability
         self._active_start = start
         self._low_since = None
         self._confidence_sum = probability
         self._confidence_count = 1
+        if action in CARDIO_ACTIONS:
+            event_type = "cardio_started"
+        elif action in STRENGTH_ACTIONS:
+            event_type = "set_started"
+        else:
+            event_type = "activity_started"
         events.append(
             {
-                "type": "cardio_started" if action in CARDIO_ACTIONS else "set_started",
+                "type": event_type,
                 "session_id": self.snapshot.session_id,
                 "timestamp": start,
                 "action": action,
@@ -92,7 +108,12 @@ class WorkoutStrategy:
         confidence = self._confidence_sum / max(1, self._confidence_count)
         events: list[dict] = []
         if duration >= self.config.minimum_set_s:
-            event_type = "cardio_ended" if action in CARDIO_ACTIONS else "set_ended"
+            if action in CARDIO_ACTIONS:
+                event_type = "cardio_ended"
+            elif action in STRENGTH_ACTIONS:
+                event_type = "set_ended"
+            else:
+                event_type = "activity_ended"
             events.append(
                 {
                     "type": event_type,
@@ -105,10 +126,11 @@ class WorkoutStrategy:
                 }
             )
             self.snapshot.active_seconds += duration
-            if action not in CARDIO_ACTIONS:
+            if action in STRENGTH_ACTIONS:
                 self.snapshot.sets_in_session += 1
         self._last_active_end = end
         self.snapshot.state = "inter_set"
+        self.snapshot.exercise_state = "exercising"
         self.snapshot.action = None
         self.snapshot.action_probability = 0.0
         self._active_start = None
@@ -124,13 +146,16 @@ class WorkoutStrategy:
             and self._last_active_end is not None
             and timestamp - self._last_active_end >= self.config.workout_timeout_s
         ):
+            finalized_at = self._last_active_end + self.config.workout_timeout_s
             event = {
                 "type": "workout_ended",
                 "session_id": self.snapshot.session_id,
-                "timestamp": self._last_active_end,
+                "timestamp": finalized_at,
+                "end_timestamp": self._last_active_end,
                 "start_timestamp": self._session_start,
                 "active_seconds": self.snapshot.active_seconds,
                 "sets": self.snapshot.sets_in_session,
+                "finalized": True,
             }
             self.snapshot = StrategySnapshot()
             self._candidate_action = None
@@ -157,8 +182,12 @@ class WorkoutStrategy:
         self.snapshot.motion_probability = motion_probability
         events: list[dict] = []
 
-        if self.snapshot.state == "active_set" and self.snapshot.action:
-            current_probability = target.get(self.snapshot.action, 0.0)
+        if self.snapshot.state == "active" and self.snapshot.action:
+            current_probability = (
+                target.get(self.snapshot.action, 0.0)
+                if self.snapshot.action in STRENGTH_ACTIONS
+                else motion_probability
+            )
             self.snapshot.action_probability = current_probability
             self._confidence_sum += current_probability
             self._confidence_count += 1
@@ -169,14 +198,37 @@ class WorkoutStrategy:
                 if timestamp - self._low_since >= self.config.end_hold_s:
                     events.extend(self._end_action(self._low_since))
         else:
-            if probability >= self.config.start_threshold:
-                if action != self._candidate_action:
-                    self._candidate_action = action
+            strength_candidate = (
+                action in STRENGTH_ACTIONS
+                and probability >= self.config.start_threshold
+            )
+            candidate_probability = (
+                probability if strength_candidate else motion_probability
+            )
+            candidate_key = (
+                action if strength_candidate else "__general_motion__"
+            )
+            if candidate_probability >= self.config.start_threshold:
+                if candidate_key != self._candidate_action:
+                    self._candidate_action = candidate_key
                     self._candidate_since = timestamp
-                elif self._candidate_since is not None and timestamp - self._candidate_since >= self.config.start_hold_s:
-                    events.extend(self._start_action(timestamp, action, probability))
-                    self._candidate_action = None
-                    self._candidate_since = None
+                else:
+                    required_hold = (
+                        self.config.strength_start_hold_s
+                        if strength_candidate
+                        else self.config.general_start_hold_s
+                    )
+                    if (
+                        self._candidate_since is not None
+                        and timestamp - self._candidate_since >= required_hold
+                    ):
+                        events.extend(
+                            self._start_action(
+                                timestamp, action, candidate_probability
+                            )
+                        )
+                        self._candidate_action = None
+                        self._candidate_since = None
             else:
                 self._candidate_action = None
                 self._candidate_since = None
@@ -185,7 +237,7 @@ class WorkoutStrategy:
 
     def flush(self, timestamp: float) -> tuple[StrategySnapshot, list[dict]]:
         events = []
-        if self.snapshot.state == "active_set":
+        if self.snapshot.state == "active":
             events.extend(self._end_action(timestamp))
         if self.snapshot.session_id and self._last_active_end is not None:
             events.extend(self._end_workout_if_due(self._last_active_end + self.config.workout_timeout_s))

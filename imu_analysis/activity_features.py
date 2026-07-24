@@ -3,14 +3,22 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
+import sys
 from typing import Iterable
 
 import numpy as np
 
+SRC_ROOT = Path(__file__).resolve().parents[1] / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
+
+from opensport.features import interpolate_to_grid
+
 
 TARGET_RATE_HZ = 50.0
 WINDOW_SECONDS = 4.0
-HOP_SECONDS = 0.5
+HOP_SECONDS = 1.0
 SENSOR_KEYS = ("ax_g", "ay_g", "az_g", "gx_dps", "gy_dps", "gz_dps")
 
 
@@ -95,7 +103,12 @@ def extract_window_features(samples: np.ndarray, fs: float = TARGET_RATE_HZ) -> 
     return result
 
 
-def uniform_resample(values: np.ndarray, duration_s: float, target_hz: float = TARGET_RATE_HZ) -> np.ndarray:
+def uniform_resample(
+    values: np.ndarray,
+    duration_s: float,
+    target_hz: float = TARGET_RATE_HZ,
+    source_timestamps_s: np.ndarray | None = None,
+) -> np.ndarray:
     """Resample a batched logger stream using recording duration, not duplicate timestamps."""
     source = np.asarray(values, dtype=float)
     if source.ndim != 2 or source.shape[1] != 6:
@@ -103,10 +116,25 @@ def uniform_resample(values: np.ndarray, duration_s: float, target_hz: float = T
     if len(source) < 2 or duration_s <= 0:
         return source.copy()
     output_count = max(2, int(round(duration_s * target_hz)) + 1)
-    source_time = np.linspace(0.0, duration_s, len(source))
+    source_time = (
+        np.asarray(source_timestamps_s, dtype=float)
+        if source_timestamps_s is not None
+        else np.linspace(0.0, duration_s, len(source))
+    )
+    source_time = source_time - source_time[0]
+    if np.any(np.diff(source_time) < 0):
+        raise ValueError("Source timestamps must be monotonic")
+    unique_time, inverse = np.unique(source_time, return_inverse=True)
+    if len(unique_time) != len(source_time):
+        totals = np.zeros((len(unique_time), source.shape[1]), dtype=float)
+        counts = np.zeros(len(unique_time), dtype=float)
+        np.add.at(totals, inverse, source)
+        np.add.at(counts, inverse, 1.0)
+        source = totals / counts[:, None]
+        source_time = unique_time
     target_time = np.arange(output_count, dtype=float) / target_hz
     target_time = target_time[target_time <= duration_s + 1e-9]
-    return np.column_stack([np.interp(target_time, source_time, source[:, index]) for index in range(6)])
+    return interpolate_to_grid(source_time, source, target_time)
 
 
 def iter_feature_windows(

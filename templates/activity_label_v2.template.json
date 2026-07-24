@@ -1,0 +1,38 @@
+{
+  "schema_version": "2.0",
+  "taxonomy_version": "REPLACE_WITH_TAXONOMY_VERSION",
+  "date": "2026-07-25",
+  "participant": "S001",
+  "device": ["D01", "D02"],
+  "csv_file": [
+    "0725-S001-T0001-D01-left.csv",
+    "0725-S001-T0001-D02-right.csv"
+  ],
+  "annotation_scope": "full_recording",
+  "window_trainable": true,
+  "evidence_tier": "gold",
+  "recording": {
+    "start_time": "2026-07-25T10:01:00.000+08:00",
+    "end_time": "2026-07-25T10:02:00.000+08:00",
+    "duration_seconds": 60.0,
+    "row_count": 3001
+  },
+  "annotation_quality": {
+    "status": "reviewed",
+    "reason": "现场事件已复核"
+  },
+  "segments": [
+    {
+      "start_s": 3.0,
+      "end_s": 57.0,
+      "activity_id": "treadmill_walk",
+      "motion_state": "motion",
+      "wear_state": "valid",
+      "phase": "active",
+      "window_trainable": true,
+      "label_source": "operator_event",
+      "confidence": "high",
+      "review_note": "速度 3.0 km/h"
+    }
+  ]
+}

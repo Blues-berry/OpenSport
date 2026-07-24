@@ -12,7 +12,7 @@ import pandas as pd
 
 from activity_features import SENSOR_KEYS, TARGET_RATE_HZ, uniform_resample
 from activity_runtime import RuntimeCoordinator
-from imu_common import ACC_COLS, GYRO_COLS, read_imu_csv
+from imu_common import ACC_COLS, GYRO_COLS, elapsed_seconds, read_imu_csv
 from train_activity_model import recording_duration
 from workout_store import WorkoutStore
 from label_schema import load_label_document
@@ -29,7 +29,13 @@ def replay_file(
     duration = recording_duration(frame)
     matrix = frame.reindex(columns=ACC_COLS + GYRO_COLS).apply(pd.to_numeric, errors="coerce").to_numpy(dtype=float)
     matrix = pd.DataFrame(matrix).interpolate(limit_direction="both").fillna(0.0).to_numpy()
-    values = uniform_resample(matrix, duration, TARGET_RATE_HZ)
+    sample_seconds, _ = elapsed_seconds(frame)
+    values = uniform_resample(
+        matrix,
+        duration,
+        TARGET_RATE_HZ,
+        source_timestamps_s=sample_seconds,
+    )
     runtime = RuntimeCoordinator(model_path, database_path)
     base = float(base_timestamp if base_timestamp is not None else time.time())
     inference_count = 0
@@ -76,7 +82,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("source", type=Path)
     parser.add_argument("--model", type=Path, required=True)
-    parser.add_argument("--database", type=Path, default=Path("imu_output/workouts.sqlite3"))
+    parser.add_argument(
+        "--database",
+        type=Path,
+        default=":memory:",
+        help="Optional persistent replay database; defaults to an isolated in-memory store.",
+    )
     args = parser.parse_args()
     print(json.dumps(replay_file(args.source, args.model, args.database), ensure_ascii=False, indent=2))
 

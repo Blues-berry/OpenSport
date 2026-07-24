@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import numpy as np
+import pandas as pd
 
 from head_posture_features import angle_difference_degrees, extract_posture_features, posture_baseline
 from head_posture_runtime import SixAxisRelativeOrientation, StreamingHeadPostureClassifier
+from imu_common import ACC_COLS, ANGLE_COLS, GYRO_COLS, QUAT_COLS
+import train_head_posture_model
 
 
 def test_angle_difference_wraps_at_180_degrees() -> None:
@@ -52,22 +55,22 @@ def test_relative_quaternion_features_handle_angle_wrapping() -> None:
 
 def test_abnormal_episode_records_continuous_duration() -> None:
     runtime = StreamingHeadPostureClassifier.__new__(StreamingHeadPostureClassifier)
-    runtime.abnormal_on_seconds = 3.0
-    runtime.normal_off_seconds = 2.0
+    runtime.abnormal_on_seconds = 30.0
+    runtime.normal_off_seconds = 5.0
     runtime.candidate_label = "normal"
     runtime.candidate_since = None
     runtime.active_label = "normal"
     runtime.active_since = None
     runtime.last_abnormal_duration = 0.0
 
-    assert runtime._update_episode(0.0, "head_down") == []
-    events = runtime._update_episode(3.0, "head_down")
-    assert events == [{"type": "posture_started", "posture": "head_down", "started_at": 0.0}]
-    assert runtime._update_episode(10.0, "normal") == []
-    events = runtime._update_episode(12.0, "normal")
+    assert runtime._update_episode(0.0, "poor") == []
+    events = runtime._update_episode(30.0, "poor")
+    assert events == [{"type": "posture_started", "posture": "poor", "started_at": 0.0}]
+    assert runtime._update_episode(40.0, "normal") == []
+    events = runtime._update_episode(45.0, "normal")
     assert events[0]["type"] == "posture_ended"
-    assert events[0]["ended_at"] == 10.0
-    assert events[0]["duration_seconds"] == 10.0
+    assert events[0]["ended_at"] == 40.0
+    assert events[0]["duration_seconds"] == 40.0
 
 
 def test_six_axis_stream_is_augmented_with_relative_orientation() -> None:
@@ -103,3 +106,43 @@ def test_six_axis_stream_is_augmented_with_relative_orientation() -> None:
     assert output is not None
     assert all(key in output for key in ("roll_deg", "pitch_deg", "yaw_deg", "q0", "q1", "q2", "q3"))
     assert abs(output["roll_deg"]) + abs(output["pitch_deg"]) > 20.0
+
+
+def test_offline_and_runtime_posture_resampling_use_timestamps(monkeypatch) -> None:
+    timestamps = np.asarray([0.0, 0.03, 0.04])
+    values = np.asarray([0.0, 10.0, 10.0])
+    columns = ACC_COLS + GYRO_COLS + ANGLE_COLS + QUAT_COLS
+    frame = pd.DataFrame({column: values for column in columns})
+    monkeypatch.setattr(train_head_posture_model, "read_imu_file", lambda _: frame)
+    monkeypatch.setattr(
+        train_head_posture_model,
+        "elapsed_seconds",
+        lambda _: (timestamps, "test"),
+    )
+    offline, _ = train_head_posture_model.read_posture_capture("capture.csv")
+
+    runtime = StreamingHeadPostureClassifier.__new__(StreamingHeadPostureClassifier)
+    runtime.sample_rate_hz = 50.0
+    runtime.window_seconds = 0.06
+    runtime.samples = [
+        {
+            "timestamp": timestamp,
+            **{
+                key: value
+                for key, value in zip(
+                    (
+                        "ax_g", "ay_g", "az_g",
+                        "gx_dps", "gy_dps", "gz_dps",
+                        "roll_deg", "pitch_deg", "yaw_deg",
+                        "q0", "q1", "q2", "q3",
+                    ),
+                    [sample_value] * 13,
+                )
+            },
+        }
+        for timestamp, sample_value in zip(timestamps, values)
+    ]
+    online = runtime._uniform_window(0.04)
+
+    assert np.allclose(offline, online)
+    assert abs(offline[1, 0] - (20.0 / 3.0)) < 1e-6

@@ -8,7 +8,14 @@ import shutil
 from pathlib import Path
 
 
-MODEL_FILES = ("activity_model.pkl", "activity_model.txt", "feature_importance.csv", "metrics.json", "MODEL_CARD.md")
+MODEL_FILES = (
+    "activity_model.pkl",
+    "activity_model.txt",
+    "feature_importance.csv",
+    "metrics.json",
+    "MODEL_CARD.md",
+    "model_bundle.json",
+)
 
 
 def score(report: dict) -> tuple[float, float]:
@@ -19,18 +26,21 @@ def score(report: dict) -> tuple[float, float]:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("candidate_model_dir", type=Path)
-    parser.add_argument("--registry", type=Path, default=Path("imu_output/activity_registry"))
-    parser.add_argument("--allow-not-ready-initial", action="store_true")
+    parser.add_argument(
+        "--registry",
+        type=Path,
+        default=Path("imu_output/models/activity"),
+    )
     args = parser.parse_args()
     candidate_report = json.loads(
         (args.candidate_model_dir / "metrics.json").read_text(encoding="utf-8")
     )
     champion = args.registry / "champion"
     champion_report_path = champion / "metrics.json"
-    if not candidate_report.get("demo_ready") and not (
-        args.allow_not_ready_initial and not champion_report_path.exists()
-    ):
+    if not candidate_report.get("demo_ready"):
         raise SystemExit("Candidate failed the demo acceptance gate; champion was not changed")
+    if not candidate_report.get("formal_evaluation"):
+        raise SystemExit("Candidate has no gold formal evaluation; champion was not changed")
     if champion_report_path.exists():
         champion_report = json.loads(champion_report_path.read_text(encoding="utf-8"))
         candidate_score = score(candidate_report)

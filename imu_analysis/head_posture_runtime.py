@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pickle
+import sys
 from collections import deque
 from pathlib import Path
 
@@ -10,6 +11,17 @@ import numpy as np
 import pandas as pd
 
 from head_posture_features import POSTURE_SENSOR_KEYS, extract_posture_features, posture_baseline
+
+SRC_ROOT = Path(__file__).resolve().parents[1] / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
+
+try:
+    from opensport.features import interpolate_to_grid
+    from opensport.models.posture.policy import PosturePolicy
+except ImportError:
+    interpolate_to_grid = None
+    PosturePolicy = None
 
 
 def _quaternion_multiply(left: np.ndarray, right: np.ndarray) -> np.ndarray:
@@ -46,6 +58,26 @@ def _euler_from_quaternion(quaternion: np.ndarray) -> tuple[float, float, float]
     pitch = np.arcsin(np.clip(2.0 * (w * y - z * x), -1.0, 1.0))
     yaw = np.arctan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
     return tuple(float(np.rad2deg(value)) for value in (roll, pitch, yaw))
+
+
+def _quaternion_from_euler_degrees(
+    roll: float, pitch: float, yaw: float
+) -> np.ndarray:
+    half_roll, half_pitch, half_yaw = np.deg2rad(
+        [roll, pitch, yaw]
+    ) / 2.0
+    cr, sr = np.cos(half_roll), np.sin(half_roll)
+    cp, sp = np.cos(half_pitch), np.sin(half_pitch)
+    cy, sy = np.cos(half_yaw), np.sin(half_yaw)
+    return np.asarray(
+        [
+            cr * cp * cy + sr * sp * sy,
+            sr * cp * cy - cr * sp * sy,
+            cr * sp * cy + sr * cp * sy,
+            cr * cp * sy - sr * sp * cy,
+        ],
+        dtype=float,
+    )
 
 
 class SixAxisRelativeOrientation:
@@ -131,6 +163,12 @@ class StreamingHeadPostureClassifier:
             self.payload = pickle.load(handle)
         if self.payload.get("model_family") != "calibrated_lightgbm_head_posture":
             raise ValueError("Expected a calibrated_lightgbm_head_posture model")
+        if (
+            int(self.payload.get("format_version", 1)) >= 2
+            and self.payload.get("feature_version")
+            != "head-posture-relative-v2"
+        ):
+            raise ValueError("Incompatible posture feature_version")
         self.model = self.payload["model"]
         self.features = self.payload["features"]
         self.classes = self.payload["classes"]
@@ -139,8 +177,22 @@ class StreamingHeadPostureClassifier:
         self.hop_seconds = float(self.payload["hop_seconds"])
         self.calibration_seconds = float(self.payload.get("calibration_seconds", 10.0))
         self.threshold = float(self.payload.get("probability_threshold", 0.60))
-        self.abnormal_on_seconds = float(self.payload.get("abnormal_on_seconds", 3.0))
-        self.normal_off_seconds = float(self.payload.get("normal_off_seconds", 2.0))
+        self.experimental = bool(
+            self.payload.get(
+                "experimental", not self.payload.get("demo_ready", False)
+            )
+        ) or int(self.payload.get("format_version", 1)) < 2
+        self.warning = (
+            "实验模型/低于正式验收标准"
+            if self.experimental
+            else None
+        )
+        self.abnormal_on_seconds = max(
+            30.0, float(self.payload.get("abnormal_on_seconds", 30.0))
+        )
+        self.normal_off_seconds = max(
+            5.0, float(self.payload.get("normal_off_seconds", 5.0))
+        )
         self.samples: deque[dict] = deque()
         self.calibration_samples: list[dict] = []
         self.baseline: dict | None = None
@@ -151,6 +203,8 @@ class StreamingHeadPostureClassifier:
         self.active_since: float | None = None
         self.last_abnormal_duration = 0.0
         self.orientation = SixAxisRelativeOrientation()
+        self.policy = PosturePolicy() if PosturePolicy is not None else None
+        self.orientation_source = "six_axis_relative"
 
     def start_calibration(self) -> None:
         self.calibration_samples.clear()
@@ -182,7 +236,9 @@ class StreamingHeadPostureClassifier:
             now + 0.5 / self.sample_rate_hz,
             1.0 / self.sample_rate_hz,
         )
-        return np.column_stack([np.interp(target, timestamps, values[:, index]) for index in range(values.shape[1])])
+        if interpolate_to_grid is None:
+            raise RuntimeError("Shared resampling implementation is unavailable")
+        return interpolate_to_grid(timestamps, values, target)
 
     def _update_episode(self, now: float, label: str) -> list[dict]:
         events: list[dict] = []
@@ -213,7 +269,34 @@ class StreamingHeadPostureClassifier:
         return events
 
     def update(self, sample: dict) -> dict | None:
-        sample = self.orientation.update(sample, calibrating=self.baseline is None)
+        hardware_orientation = all(
+            key in sample for key in ("roll_deg", "pitch_deg", "yaw_deg")
+        ) and str(sample.get("orientation_source", "")).startswith("hardware")
+        if hardware_orientation:
+            sample = dict(sample)
+            self.orientation_source = str(sample.get("orientation_source"))
+            if not all(
+                key in sample for key in ("q0", "q1", "q2", "q3")
+            ):
+                quaternion = _quaternion_from_euler_degrees(
+                    float(sample["roll_deg"]),
+                    float(sample["pitch_deg"]),
+                    float(sample["yaw_deg"]),
+                )
+                sample.update(
+                    {
+                        "q0": float(quaternion[0]),
+                        "q1": float(quaternion[1]),
+                        "q2": float(quaternion[2]),
+                        "q3": float(quaternion[3]),
+                    }
+                )
+        else:
+            sample = self.orientation.update(
+                sample, calibrating=self.baseline is None
+            )
+            sample["orientation_source"] = "six_axis_relative"
+            self.orientation_source = "six_axis_relative"
         now = float(sample["timestamp"])
         if self.baseline is None:
             self.calibration_samples.append(sample)
@@ -227,7 +310,8 @@ class StreamingHeadPostureClassifier:
                 self.orientation.reset()
                 return {"state": "calibration_failed", "reason": "head_moved_during_calibration"}
             self.baseline = posture_baseline(matrix)
-            self.orientation.finish_calibration()
+            if not hardware_orientation:
+                self.orientation.finish_calibration()
             self.samples.clear()
             return {
                 "state": "calibrated",
@@ -255,7 +339,39 @@ class StreamingHeadPostureClassifier:
         predicted = self.classes[int(np.argmax(probability))]
         confidence = probabilities[predicted]
         stable = features["gyro_mean_dps"] <= 12.0 and features["dynamic_acc_std_g"] <= 0.08
-        observed = predicted if confidence >= self.threshold and stable else self.active_label
+        angles = {
+            "roll": float(features.get("relative_roll_mean", 0.0)),
+            "pitch": float(features.get("relative_pitch_mean", 0.0)),
+            "yaw": float(features.get("relative_yaw_mean", 0.0)),
+        }
+        yaw_reliable = self.orientation_source != "six_axis_relative"
+        if self.policy is not None:
+            policy_state, deviations = self.policy.classify(
+                angles["roll"],
+                angles["pitch"],
+                angles["yaw"],
+                yaw_reliable,
+            )
+        else:
+            deviations = tuple(
+                label
+                for label, value in (
+                    ("head_tilt", angles["roll"]),
+                    ("head_pitch", angles["pitch"]),
+                    ("head_turn", angles["yaw"] if yaw_reliable else 0.0),
+                )
+                if abs(value) >= 15.0
+            )
+            policy_state = "poor" if deviations else "normal"
+        model_state = "normal" if predicted == "normal" else "poor"
+        binary_prediction = (
+            "poor" if model_state == "poor" or policy_state == "poor" else "normal"
+        )
+        observed = (
+            binary_prediction
+            if confidence >= self.threshold and stable
+            else self.active_label
+        )
         events = self._update_episode(now, observed)
         active_duration = (
             max(0.0, now - self.active_since)
@@ -263,13 +379,25 @@ class StreamingHeadPostureClassifier:
             else 0.0
         )
         return {
+            "schema_version": "1.0",
             "state": "monitoring",
             "posture": self.active_label,
-            "posture_name_zh": self.payload.get("class_names_zh", {}).get(self.active_label, self.active_label),
+            "posture_state": self.active_label,
+            "posture_name_zh": "正常" if self.active_label == "normal" else "需要调整",
             "predicted_posture": predicted,
+            "predicted_posture_state": binary_prediction,
+            "deviations": list(deviations),
+            "relative_angles_degrees": angles,
             "confidence": confidence,
             "stable": stable,
             "abnormal": self.active_label != "normal",
+            "alert": self.active_label == "poor",
+            "calibrated": True,
+            "yaw_reliability": "reliable" if yaw_reliable else "degraded",
+            "orientation_source": self.orientation_source,
+            "medical_diagnostic": False,
+            "experimental": self.experimental,
+            "warning": self.warning,
             "continuous_seconds": active_duration,
             "probabilities": probabilities,
             "events": events,

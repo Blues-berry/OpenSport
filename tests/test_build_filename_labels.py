@@ -21,9 +21,19 @@ def test_apply_preserves_existing_reviewed_schema_v2_label(tmp_path, monkeypatch
     label_path = labels_dir / "0725-S001-T0007.labels.json"
     original = {
         "schema_version": "2.0",
+        "taxonomy_version": build_filename_labels.taxonomy_version(),
+        "date": "2026-07-25",
+        "participant": "S001",
+        "device": "D01",
+        "csv_file": "../0725-S001-T0007.csv",
         "annotation_scope": "review_required",
         "window_trainable": False,
+        "evidence_tier": "rejected",
         "recording": {"duration_seconds": 10.0},
+        "annotation_quality": {
+            "status": "review_required",
+            "reason": "manual review pending",
+        },
         "segments": [],
         "review_sentinel": "manual-label-must-survive",
     }

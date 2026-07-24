@@ -224,6 +224,8 @@ def build_document(
     common = {
         "schema_version": SCHEMA_VERSION,
         "taxonomy_version": taxonomy_version(),
+        "protocol_version": "legacy-pre-v1.0",
+        "evidence_tier": "legacy_reviewed",
         "date": metadata["date"],
         "date_source": metadata["date_source"],
         "participant": metadata["participant"],
@@ -244,6 +246,7 @@ def build_document(
         return {
             **common,
             "annotation_scope": "session_weak",
+            "evidence_tier": "session_weak",
             "window_trainable": False,
             "annotation_quality": {
                 "status": "reviewed_weak",
@@ -261,6 +264,7 @@ def build_document(
         return {
             **common,
             "annotation_scope": "review_required",
+            "evidence_tier": "rejected",
             "window_trainable": False,
             "annotation_quality": {
                 "status": "review_required",

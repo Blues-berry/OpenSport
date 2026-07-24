@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://opensport.local/schemas/activity_label_v2.schema.json",
+  "title": "OpenSport activity labels v2",
+  "type": "object",
+  "required": [
+    "schema_version", "taxonomy_version", "date", "participant", "device",
+    "csv_file", "annotation_scope", "recording", "window_trainable",
+    "annotation_quality", "evidence_tier", "segments"
+  ],
+  "properties": {
+    "schema_version": {"const": "2.0"},
+    "evidence_tier": {"enum": ["gold", "legacy_reviewed", "session_weak", "rejected"]},
+    "annotation_scope": {"enum": ["full_recording", "session_weak", "review_required"]},
+    "window_trainable": {"type": "boolean"},
+    "recording": {
+      "type": "object",
+      "required": ["start_time", "end_time", "duration_seconds", "row_count"]
+    },
+    "segments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "start_s", "end_s", "activity_id", "motion_state", "wear_state",
+          "phase", "window_trainable", "label_source", "confidence", "review_note"
+        ],
+        "properties": {
+          "motion_state": {"enum": ["motion", "non_motion", null]},
+          "wear_state": {"enum": ["valid", "removed", "asymmetric", "invalid"]},
+          "phase": {"enum": ["active", "rest", "transition", "artifact"]},
+          "confidence": {"enum": ["high", "medium", "low"]}
+        }
+      }
+    }
+  }
+}

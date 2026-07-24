@@ -4,6 +4,7 @@ import json
 
 import pandas as pd
 
+from label_schema import taxonomy_version
 from train_activity_model import (
     collapse_rare_classes,
     label_trainability,
@@ -43,13 +44,25 @@ def test_label_trainability_reads_optional_audit_flag(tmp_path):
     label_path = labels / "0722-测试用户-站姿.labels.json"
     label_path.write_text(
         json.dumps(
-            {
-                "schema_version": "2.0",
-                "annotation_scope": "full_recording",
-                "window_trainable": False,
-                "recording": {"duration_seconds": 30},
-                "segments": [
-                    {
+                {
+                    "schema_version": "2.0",
+                    "taxonomy_version": taxonomy_version(),
+                    "date": "2026-07-22",
+                    "participant": "S001",
+                    "device": "D01",
+                    "csv_file": "../0722-测试用户-站姿.csv",
+                    "annotation_scope": "full_recording",
+                    "window_trainable": False,
+                    "evidence_tier": "rejected",
+                    "recording": {"duration_seconds": 30},
+                    "annotation_quality": {
+                        "status": "rejected",
+                        "reason": "removed wear",
+                    },
+                    "segments": [
+                        {
+                            "start_s": 0,
+                            "end_s": 30,
                         "activity_id": "removed_wear",
                         "motion_state": None,
                         "wear_state": "removed",
@@ -73,12 +86,16 @@ def test_rare_exact_classes_are_preserved_but_grouped_for_training():
             {"subject_id": "s1", "exact_activity_id": "sitting", "action_id": "sitting", "motion_state": "non_motion"},
             {"subject_id": "s2", "exact_activity_id": "sitting", "action_id": "sitting", "motion_state": "non_motion"},
             {"subject_id": "s3", "exact_activity_id": "sitting", "action_id": "sitting", "motion_state": "non_motion"},
+            {"subject_id": "s4", "exact_activity_id": "sitting", "action_id": "sitting", "motion_state": "non_motion"},
+            {"subject_id": "s5", "exact_activity_id": "sitting", "action_id": "sitting", "motion_state": "non_motion"},
         ]
     )
     grouped, support = collapse_rare_classes(source)
     assert support["bench_press"] == 2
     assert set(grouped.loc[grouped["exact_activity_id"].eq("bench_press"), "action_id"]) == {"other_motion"}
-    assert set(grouped.loc[grouped["exact_activity_id"].eq("sitting"), "action_id"]) == {"sitting"}
+    assert set(grouped.loc[grouped["exact_activity_id"].eq("sitting"), "action_id"]) == {
+        "other_non_motion"
+    }
 
 
 def test_recording_duration_handles_full_datetime_without_treating_date_as_delta():
