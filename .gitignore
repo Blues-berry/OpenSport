@@ -27,3 +27,7 @@ venv/
 .vscode/
 .DS_Store
 Thumbs.db
+!data_collection_timeline_template.csv
+!head_posture_collection_template.csv
+!requirements.txt
+/scripts/long_session_labels_*.json

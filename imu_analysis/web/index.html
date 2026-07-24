@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>IMU 健康体验原型</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="phone-shell">
+      <section class="scroll-content view active" data-view="sport">
+        <div class="status-line"><span id="clock">09:41</span><span>78%</span></div>
+        <h1>运动</h1>
+        <p class="intro">无需开始，戴上耳机即可自动记录</p>
+
+        <section class="notice-card">
+          <h2 id="status-title">自动记录已开启</h2>
+          <p id="status-detail">上传耳机 IMU 数据后自动完成识别</p>
+        </section>
+
+        <label class="today-card" for="file-input">
+          <span class="eyebrow">今天</span>
+          <strong id="total-duration">上传数据</strong>
+          <span id="today-summary">选择 CSV 或 TXT，模型会自动整理训练记录</span>
+          <span class="upload-hint" id="upload-hint">选择 IMU 文件</span>
+        </label>
+        <input id="file-input" type="file" accept=".csv,.txt,text/csv,text/plain" />
+
+        <h2 class="section-title">最近训练</h2>
+        <section class="training-list" id="training-list">
+          <p class="empty-state">尚无训练记录</p>
+        </section>
+
+        <section class="notice-card settings-card">
+          <h2>记录设置</h2>
+          <p>使用 4 秒窗口，每 0.5 秒更新；动作稳定后自动记录组数</p>
+        </section>
+      </section>
+
+      <section class="scroll-content view" data-view="posture">
+        <div class="status-line"><span class="clock">09:41</span><span>78%</span></div>
+        <h1>姿态健康</h1>
+        <p class="intro">不打断听音，只在需要时轻声提醒</p>
+        <section class="notice-card"><h2>姿态守护已开启</h2><p>上传数据后自动分析 · 运动时暂停评价</p></section>
+        <section class="posture-card">
+          <h2>当前姿态</h2>
+          <img id="posture-pet" class="posture-pet" alt="姿态宠物" src="https://www.figma.com/api/mcp/asset/eed27874-3d61-48d9-9e37-01955113c4cd" />
+          <strong id="posture-state">等待姿态数据</strong>
+          <p id="posture-angle">上传带姿态角的 IMU 数据即可更新</p>
+          <p id="posture-detail">当前运动模型也会参与判断：运动中不做静态姿态评价。</p>
+        </section>
+        <section class="posture-card"><h2>提醒已延后</h2><strong>会议进行中</strong><p>通话与媒体播放不插播，结束后再轻提醒。</p></section>
+        <section class="posture-card"><h2>自然坐姿基线</h2><p>上次校准：今天 08:55 · 约 10 秒完成</p><button class="calibrate" type="button" id="calibrate">10 秒重新校准</button></section>
+        <section class="posture-card"><h2>提醒记录</h2><p>15:32　低头 1分18秒　已调整　›</p><p>14:08　低头 52秒　自动恢复　›</p></section>
+        <section class="posture-card"><h2>今日趋势</h2><p class="trend">09　11　13　15　17　19<br />▂　 ▅　 ▃　 ▆　 ▄　 █</p><p>下午的舒展时间更稳定，未设置打卡目标。</p></section>
+        <section class="posture-card"><h2>提醒偏好</h2><p>手机静默提醒　　已开启　›</p><p>耳机语音提示　　已关闭　›</p><p>勿扰时段　　　　22:00–08:00　›</p></section>
+      </section>
+
+      <nav class="bottom-nav" aria-label="主导航">
+        <button type="button">设备</button>
+        <button class="active" data-target="sport" type="button">运动</button>
+        <button data-target="posture" type="button">姿态</button>
+        <button type="button">我的</button>
+      </nav>
+    </main>
+    <script src="/app.js"></script>
+  </body>
+</html>

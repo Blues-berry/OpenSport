@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>IMU 运动与坐姿测试端</title>
+    <link rel="stylesheet" href="/test.css" />
+    <link rel="stylesheet" href="/test-control.css" />
+  </head>
+  <body>
+    <main class="test-shell">
+      <header class="test-header">
+        <div><p class="eyebrow">独立测试前端</p><h1>测试中心</h1><p class="description">复用实时蓝牙链路测试运动识别与坐姿头部姿态模型</p></div>
+        <div class="header-controls">
+          <div class="connection-summary" id="connection-summary">等待设备连接</div>
+          <button class="posture-calibrate is-hidden" id="posture-calibrate" type="button">10 秒重新校准</button>
+          <button class="receiver-control" id="receiver-control" type="button">启动蓝牙采集</button>
+        </div>
+      </header>
+      <nav class="mode-switch" aria-label="测试模块切换"><button class="active" data-mode="motion" type="button">运动</button><button data-mode="posture" type="button">坐姿</button></nav>
+      <section class="live-note" id="live-note" aria-live="polite">正在连接实时 IMU 数据流…</section>
+      <section class="device-grid" id="device-grid" aria-live="polite"></section>
+    </main>
+    <template id="device-template">
+      <article class="device-card"><header class="device-card-header"><div class="device-name"><span class="status-dot"></span><strong></strong></div><span class="live-badge">实时</span></header><div class="device-content"><div class="gyro-visual" aria-label="实时三轴陀螺仪示意图"><span class="gyro-axis axis-x"></span><span class="gyro-axis axis-y"></span><span class="gyro-axis axis-z"></span><span class="gyro-core"></span></div><dl class="metrics"></dl></div><footer class="device-footer"><span class="stream-meta"></span><span class="updated-at"></span></footer></article>
+    </template>
+    <script src="/test.js"></script>
+  </body>
+</html>

@@ -58,6 +58,12 @@ def windows_for_file(path: Path, window_s: float, overlap: float) -> list[dict]:
         # Cleaned files should normally include analysis_time_s.
         fs = 50.0
         time = np.arange(len(df)) / fs
+    # Some audit-only CSVs contain an analysis_time_s column but no valid
+    # sampling interval.  Treat those files like raw logger exports instead
+    # of attempting to construct a window with a NaN length.
+    if not np.isfinite(fs) or fs <= 0:
+        fs = 50.0
+        time = np.arange(len(df), dtype=float) / fs
     n = max(16, round(window_s * fs))
     step = max(1, round(n * (1 - overlap)))
     activity = str(df["_activity"].iloc[0]) if "_activity" in df else activity_from_folder(path.parent.name)
@@ -240,7 +246,7 @@ def main() -> None:
     args.output_dir.mkdir(parents=True, exist_ok=True)
     rows = []
     for path in find_csv_files(args.cleaned_dir):
-        if path.name == "cleaning_log.csv":
+        if path.name in {"cleaning_log.csv", "anomalies.csv"}:
             continue
         rows.extend(windows_for_file(path, args.window_seconds, args.overlap))
     all_features = pd.DataFrame(rows)

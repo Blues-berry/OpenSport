@@ -1,0 +1,5 @@
+source_file,start_s,end_s,action_id,phase,set_id
+示例.csv,0,10,non_exercise,calibration,
+示例.csv,10,45,squat,active_set,1
+示例.csv,45,75,non_exercise,inter_set,
+示例.csv,75,110,squat,active_set,2

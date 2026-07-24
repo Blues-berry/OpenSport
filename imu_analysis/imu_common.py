@@ -101,14 +101,21 @@ def recording_name(path: Path) -> str:
 
 
 def state_from_activity(activity: str) -> str:
-    """Temporary protocol-derived fitness label for the 0720 collection."""
-    if activity.startswith(("跑步机", "深蹲", "弓步蹲", "卷腹")):
-        return "exercise"
-    if activity.startswith(("自由行走", "爬楼", "下楼", "坐下起立")):
-        return "ambiguous"
-    if activity.startswith(("不对称佩戴", "佩戴取下")):
+    """Conservative binary-fitness taxonomy used by the current protocol.
+
+    Ambiguous daily locomotion and acquisition artifacts are deliberately not
+    forced into either binary class.  They can be relabelled later when an
+    explicit protocol-level ``fitness_state`` annotation is available.
+    """
+    if activity.startswith(("不对称佩戴", "佩戴取下")) or "掉落" in activity:
         return "wear_artifact"
-    return "non_exercise"
+    if activity.startswith(("开合跳", "弓步蹲", "深蹲", "卷腹", "俯卧撑", "平板支撑", "跑步机")):
+        return "exercise"
+    if activity.startswith(("自由行走", "慢走", "快走", "走路", "爬楼", "下楼", "坐下起立", "站起")):
+        return "ambiguous"
+    if activity.startswith(("坐姿", "站立", "说话", "咀嚼", "喝水", "低头", "偏头", "弯腰取物")):
+        return "non_exercise"
+    return "unlabelled"
 
 
 def read_imu_csv(path: Path) -> pd.DataFrame:
